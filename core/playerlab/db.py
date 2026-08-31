@@ -149,12 +149,25 @@ CREATE INDEX IF NOT EXISTS idx_ctx_match ON context_events (match_id);
 CREATE INDEX IF NOT EXISTS idx_int_match ON intent_samples (match_id);
 """
 
-_ADD_COLUMNS = [
+_ADD_COLUMNS_V3 = [
     ("root_causes", "context", "TEXT"),
     ("root_causes", "commitment", "TEXT"),
     ("root_causes", "role", "TEXT"),
     ("root_causes", "responsibility", "TEXT"),
     ("review_queue", "candidates", "TEXT"),
+]
+
+_ADD_COLUMNS_V4 = [
+    ("intent_samples", "known_state_sequence", "TEXT"),
+    ("intent_samples", "information_sequence", "TEXT"),
+    ("intent_samples", "known_state_features", "TEXT"),
+    ("intent_samples", "information_features", "TEXT"),
+    ("intent_samples", "motion_features", "TEXT"),
+    ("intent_samples", "structural_features", "TEXT"),
+    ("intent_samples", "round_id", "TEXT"),
+    ("intent_samples", "episode_id", "TEXT"),
+    ("intent_samples", "human_confidence2", "REAL"),
+    ("intent_samples", "human_label2", "TEXT"),
 ]
 
 
@@ -182,11 +195,20 @@ class DB:
             self.conn.execute("UPDATE schema_version SET version=2")
         if current < 3:
             self.conn.executescript(V12_SCHEMA)
-            for table, col, typ in _ADD_COLUMNS:
+            for table, col, typ in _ADD_COLUMNS_V3:
                 cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
             self.conn.execute("UPDATE schema_version SET version=3")
+        # V1.2.1 schema v4 columns are additive and idempotent; apply them
+        # regardless of recorded version (a v3-era DB may have been stamped
+        # version=4 before the columns existed).
+        for table, col, typ in _ADD_COLUMNS_V4:
+            cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        if current < 4:
+            self.conn.execute("UPDATE schema_version SET version=4")
         if current < 4:
             # review_queue.candidates (preference UI) added after v3 shipped
             cols = [r[1] for r in self.conn.execute("PRAGMA table_info(review_queue)")]
@@ -616,14 +638,21 @@ class DB:
                (id, match_id, round, anchor_tick, start_tick, end_tick, feature_sequence,
                 hard_events, player_known_state, commitment_state, situational_role,
                 rule_prediction, rule_confidence, human_label, human_confidence, source,
-                model_version, extractor_version)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                model_version, extractor_version,
+                known_state_sequence, information_sequence,
+                known_state_features, information_features,
+                motion_features, structural_features, round_id, episode_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (s["id"], s["match_id"], s["round"], s["anchor_tick"], s["start_tick"],
              s["end_tick"], jd(s["feature_sequence"]), jd(s.get("hard_events", {})),
              jd(s.get("player_known_state", {})), s["commitment_state"], s["situational_role"],
              s["rule_prediction"], s["rule_confidence"], s.get("human_label"),
              s.get("human_confidence"), s.get("source", "rule-baseline"),
-             s.get("model_version", "alpha-1"), s.get("extractor_version", "v1.2-1")))
+             s.get("model_version", "alpha-1"), s.get("extractor_version", "v1.2-1"),
+             jd(s.get("known_state_sequence", [])), jd(s.get("information_sequence", [])),
+             jd(s.get("known_state_features", {})), jd(s.get("information_features", {})),
+             jd(s.get("motion_features", [])), jd(s.get("structural_features", [])),
+             s.get("round_id", ""), s.get("episode_id", "")))
         self.conn.commit()
 
     def get_intent_samples(self, match_id=None, limit=1000):
@@ -638,5 +667,12 @@ class DB:
             d["feature_sequence"] = json.loads(d["feature_sequence"])
             d["hard_events"] = json.loads(d["hard_events"])
             d["player_known_state"] = json.loads(d["player_known_state"])
+            for k in ("known_state_sequence", "information_sequence",
+                      "motion_features", "structural_features"):
+                v = d.get(k)
+                d[k] = json.loads(v) if v else []
+            for k in ("known_state_features", "information_features"):
+                v = d.get(k)
+                d[k] = json.loads(v) if v else {}
             rows.append(d)
         return rows

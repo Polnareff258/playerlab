@@ -38,6 +38,9 @@ class Config:
     known_state_memory_ticks: int = 256  # forget last-seen after 4 s
     damage_memory_ticks: int = 1024  # damage-derived enemy info lasts 16 s
     team_comms: bool = True           # teammates share sightings (assumption)
+    teammate_contact_window_ticks: int = 192   # V1.2.1: teammate contact recency
+    public_feed_window_ticks: int = 128        # V1.2.1: public kill/death feed recency
+    bomb_carrier_known_ticks: int = 512        # V1.2.1: how long the carrier is public info
 
     # --- similarity ---
     hard_filter_map: bool = True
@@ -70,7 +73,14 @@ class Config:
         "repeek": 0.9, "move_shoot": 0.9, "advantage": 0.6})
     impact_weights: dict = field(default_factory=lambda: {
         "death": 1.0, "duel_loss": 0.8, "round_loss": 0.7, "positional_loss": 0.4})
-    review_budget_per_match: int = 4
+    review_budget_per_match: int = 8
+    review_focus: str = "balanced"   # balanced | intent | responsibility | pattern | other
+    review_quota: dict = field(default_factory=lambda: {
+        "intent": 3, "responsibility": 2, "pattern": 2, "other": 1})
+    # --- V1.2.1 optional model intelligence (spec §22) ---
+    model_provider: str = "null"     # "null" | "csnet" (optional backend)
+    csnet_models_dir: str = ""       # e.g. external/cs-net/cs-net-models
+    csnet_repo_dir: str = ""         # e.g. external/cs-net
 
     # --- V1.2 context & intent ---
     context_window_ticks: int = 256      # ~4 s lookback for TemporalContext
@@ -86,6 +96,13 @@ class Config:
     commit_utility_window_ticks: int = 96
     commit_engagement_idle_ticks: int = 48
     responsibility_conf_threshold: float = 0.55
+
+    # --- V1.2.1 responsibility conservative gate ---
+    isolated_support_dist: float = 2400.0   # beyond this, support claims need LOS/tradeability
+    dry_peek_known_enemy_dist: float = 1400.0  # enemy known this close -> fight entered knowingly
+    risk_plant_known_enemy_dist: float = 1200.0
+    reload_risk_known_enemy_dist: float = 1800.0
+    min_evidence_for_self_decision: float = 0.5  # evidence gate floor for SELF_DECISION
 
     # --- evidence discipline (COUNTERFACTUAL_DESIGN §8) ---
     n_min_claim: int = 10
@@ -112,7 +129,8 @@ class Config:
 
     def resolve(self) -> "Config":
         merged = asdict(self)
-        for name in ("features.json", "thresholds.json", "validation.json"):
+        for name in ("features.json", "thresholds.json", "validation.json",
+                     "model_intelligence.json"):
             path = os.path.join(CONFIG_DIR, name)
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8") as fh:

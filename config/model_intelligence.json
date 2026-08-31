@@ -1,0 +1,5 @@
+{
+  "model_provider": "null",
+  "csnet_repo_dir": "external/cs-net",
+  "csnet_models_dir": "external/cs-net/cs-net-models"
+}

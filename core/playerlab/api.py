@@ -26,6 +26,26 @@ def _intent_dist(db: DB) -> dict:
     return dict(Counter(s.get("rule_prediction") for s in db.get_intent_samples()))
 
 
+def _model_intelligence(cfg: Config) -> dict:
+    """Minimal Model Intelligence status (spec §42)."""
+    from .model_provider import get_provider
+    provider_cfg = getattr(cfg, "model_provider", "null")
+    try:
+        prov = get_provider(provider_cfg)
+        meta = prov.get_metadata()
+        status = ("CONNECTED" if meta.get("status") == "ready"
+                  else "ERROR" if meta.get("status") == "error"
+                  else "NOT INSTALLED")
+        return {"provider": meta.get("provider", "null"),
+                "status": status,
+                "model_version": meta.get("model_version"),
+                "loaded_tasks": prov.get_supported_tasks(),
+                "note": meta.get("note", "")}
+    except Exception as e:  # noqa: BLE001
+        return {"provider": "null", "status": "ERROR", "loaded_tasks": [],
+                "note": f"{type(e).__name__}: {e}"}
+
+
 def _json(handler, obj, code=200):
     body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
     handler.send_response(code)
@@ -121,6 +141,8 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                 elif path == "/api/intent-samples":
                     _json(self, {"samples": len(db.get_intent_samples()),
                                  "intent_distribution": _intent_dist(db)})
+                elif path == "/api/model-intelligence":
+                    _json(self, {"model_intelligence": _model_intelligence(cfg)})
                 else:
                     _json(self, {"error": "not found"}, 404)
             except Exception as e:  # noqa: BLE001

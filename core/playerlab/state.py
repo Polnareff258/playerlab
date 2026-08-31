@@ -177,9 +177,42 @@ class KnownStateBuilder:
         self.opponents_of = {}
         for s, t in self.teams.items():
             self.opponents_of[s] = {o for o, ot in self.teams.items() if ot != t and ot in (2, 3)}
+        # tick-indexed events so per-tick known-state builds scan only the
+        # window instead of the full event log (V1.2.1 intent-sample volume).
+        from collections import defaultdict
+        self._ev = {}
+        for key in ("damages", "footsteps", "shots", "kills"):
+            lst = sorted(self.demo.events.get(key, []), key=lambda e: int(e["tick"]))
+            self._ev[key] = ([int(e["tick"]) for e in lst], lst)
+        self._grenades = []
+        for gname, glist in self.demo.events.get("grenades", {}).items():
+            for g in glist:
+                self._grenades.append({**g, "kind": gname, "tick": int(g["tick"])})
+        self._grenades.sort(key=lambda g: g["tick"])
+        self._bomb_planted = sorted(
+            (int(b["tick"]) for b in self.demo.events["bombs"].get("planted", [])), reverse=True)
+        self._bomb_defused = sorted(
+            (int(b["tick"]) for b in self.demo.events["bombs"].get("defused", [])), reverse=True)
+        self._plants_start = sorted(
+            self.demo.events.get("plants_start", []), key=lambda e: int(e["tick"]))
+
+    def _events_in(self, key: str, lo: int, hi: int) -> list:
+        import bisect
+        ticks, lst = self._ev[key]
+        i = bisect.bisect_left(ticks, lo)
+        j = bisect.bisect_right(ticks, hi)
+        return lst[i:j]
 
     def _enemy_pos_at(self, enemy: int, tick: int):
         return pos_at(self.idx, enemy, tick)
+
+    def _zone_of(self, enemy: int, tick: int) -> str | None:
+        """Map zone of an enemy's position at a tick (from its place name)."""
+        rec = self.idx.get((enemy, tick))
+        if not rec:
+            return None
+        from .zones import zone_for
+        return zone_for(self.demo.header.get("map_name"), rec.get("place") or "")
 
     def seen_now(self, viewer: int, tick: int) -> list[dict]:
         """Enemies currently inside the viewer's FOV cone (approx, no occlusion)."""
@@ -217,10 +250,8 @@ class KnownStateBuilder:
         # 2) damage taken -> know attacker's location (longer memory: you know
         #    where you were shot from until the info is superseded)
         damage_memory = getattr(cfg, "damage_memory_ticks", 1024)
-        for d in self.demo.events["damages"]:
-            if d["user_steamid"] != steamid or d["tick"] > tick:
-                continue
-            if d["tick"] < tick - damage_memory:
+        for d in self._events_in("damages", tick - damage_memory, tick):
+            if d["user_steamid"] != steamid:
                 continue
             att = d["attacker_steamid"]
             pos = self._enemy_pos_at(att, d["tick"])
@@ -229,9 +260,8 @@ class KnownStateBuilder:
                 last_seen[att] = {"pos": pos, "tick": d["tick"], "source": "damage"}
 
         # 3) footsteps heard (enemies within radius, position at event tick)
-        for f in self.demo.events["footsteps"]:
-            if f["tick"] > tick:
-                continue
+        mem = self.cfg.known_state_memory_ticks
+        for f in self._events_in("footsteps", tick - mem, tick):
             enemy = f["user_steamid"]
             if enemy not in self.opponents_of[steamid]:
                 continue
@@ -244,9 +274,7 @@ class KnownStateBuilder:
                     last_seen[enemy] = {"pos": pos, "tick": f["tick"], "source": "footstep"}
 
         # 4) shots heard
-        for s in self.demo.events["shots"]:
-            if s["tick"] > tick:
-                continue
+        for s in self._events_in("shots", tick - mem, tick):
             enemy = s["user_steamid"]
             if enemy not in self.opponents_of[steamid]:
                 continue
@@ -256,17 +284,16 @@ class KnownStateBuilder:
                 heard.append({"type": "shot", "weapon": s["weapon"], "tick": s["tick"], "pos": pos})
 
         # 5) grenades heard
-        for gname, glist in self.demo.events["grenades"].items():
-            for g in glist:
-                if g["tick"] > tick:
-                    continue
-                mypos = pos_at(self.idx, steamid, g["tick"])
-                gpos = (g.get("x"), g.get("y"))
-                if not mypos or None in gpos:
-                    continue
-                if dist2d(*mypos, *gpos) <= cfg.grenade_hear_radius:
-                    heard.append({"type": "grenade", "kind": gname,
-                                  "tick": g["tick"], "pos": gpos})
+        import bisect as _bi
+        _gts = [g["tick"] for g in self._grenades]
+        for g in self._grenades[_bi.bisect_left(_gts, tick - mem): _bi.bisect_right(_gts, tick)]:
+            mypos = pos_at(self.idx, steamid, g["tick"])
+            gpos = (g.get("x"), g.get("y"))
+            if not mypos or None in gpos:
+                continue
+            if dist2d(*mypos, *gpos) <= cfg.grenade_hear_radius:
+                heard.append({"type": "grenade", "kind": g["kind"],
+                              "tick": g["tick"], "pos": gpos})
 
         # decay last_seen by memory window
         last_seen = {e: v for e, v in last_seen.items() if tick - v["tick"] <= memory}
@@ -311,11 +338,114 @@ class KnownStateBuilder:
                 elif d <= 3200.0:
                     teammate_mid += 1
 
+        # ---- V1.2.1 KnownState grounding (spec §2) --------------------------
+        # zone per known enemy (for InformationDirection aggregation)
+        for e, v in last_seen.items():
+            v["zone"] = self._zone_of(int(e), v["tick"])
+        known_enemy_zones = [v.get("zone") for v in last_seen.values() if v.get("zone")]
+        # directions: enemy zone semantics relative to the player's map half
+        known_enemy_directions = [v["zone"] for v in last_seen.values()
+                                  if v.get("zone") in ("A", "B", "MID", "CT", "T", "LONG")]
+
+        def _min_age(*sources):
+            ages = [tick - v["tick"] for v in last_seen.values()
+                    if v.get("source") in sources and v["tick"] <= tick]
+            return min(ages) if ages else None
+
+        time_since_last_known_enemy_update = min(
+            (tick - v["tick"] for v in last_seen.values() if v["tick"] <= tick), default=None)
+        time_since_visual_contact = _min_age("own_vision", "team_vision")
+        time_since_damage_contact = _min_age("damage")
+        recent_sound = [h for h in heard if tick - h["tick"] <= self.cfg.teammate_contact_window_ticks]
+
+        # bomb known: planted is public; carrier is public via bomb status.
+        planted_now = bool(self._bomb_planted and self._bomb_planted[0] <= tick)
+        defused_now = bool(self._bomb_defused and self._bomb_defused[0] <= tick)
+        bomb_known = bool(planted_now) and not defused_now
+        bomb_zone = None
+        bomb_confidence = 0.0
+        if bomb_known:
+            bomb_zone = next((b.get("site") for b in reversed(self.demo.events["bombs"]["planted"])
+                              if b["tick"] <= tick), None)
+            bomb_confidence = 0.9 if bomb_zone in ("A", "B") else 0.5
+        else:
+            # carrier known publicly while alive (bomb icon in the HUD)
+            carrier = None
+            for b in self._plants_start:
+                if b["tick"] <= tick and b.get("user_steamid"):
+                    carrier = b["user_steamid"]
+                    break
+            if carrier is not None:
+                pos = pos_at(self.idx, carrier, tick)
+                zone = self._zone_of(carrier, tick) if pos else None
+                bomb_known = True
+                bomb_zone = zone
+                bomb_confidence = 0.6 if pos else 0.4
+
+        # teammate contact count in window: teammates visible or within radius
+        teammate_contact_count = teammate_near + teammate_mid
+        if myrec and myrec.get("is_alive"):
+            for mate in self.teams:
+                if mate == steamid or self.teams[mate] != self.teams[steamid]:
+                    continue
+                mrec = self.idx.get((mate, tick))
+                if not mrec or not mrec.get("is_alive"):
+                    continue
+                if not vision_sees(myrec, mrec, self.cfg, self.offset):
+                    continue
+                d = dist2d(*(pos_at(self.idx, steamid, tick) or (0, 0)),
+                           *(pos_at(self.idx, mate, tick) or (0, 0)))
+                if d <= 1600.0:
+                    teammate_contact_count += 1
+
+        # recent teammate kill/death from the public feed
+        feed_win = self.cfg.public_feed_window_ticks
+        my_team_num = self.teams.get(steamid, -1)
+        recent_teammate_kill = any(
+            k["tick"] > tick - feed_win and k["tick"] <= tick
+            and k.get("attacker_steamid") in self.teams
+            and self.teams[k["attacker_steamid"]] == my_team_num
+            for k in self._events_in("kills", tick - feed_win, tick))
+        recent_teammate_death = any(
+            k["tick"] > tick - feed_win and k["tick"] <= tick
+            and k.get("user_steamid") in self.teams
+            and self.teams[k["user_steamid"]] == my_team_num
+            for k in self._events_in("kills", tick - feed_win, tick))
+
+        # alive counts from tick index (no ground-truth shortcut)
+        _alive = {2: 0, 3: 0}
+        for _s, _t in self.teams.items():
+            _rec = self.idx.get((_s, tick))
+            if _rec and _rec.get("is_alive"):
+                _alive[_t] = _alive.get(_t, 0) + 1
+        objective_information = {
+            "bomb_planted": bomb_known and bool(planted_now) and not defused_now,
+            "bomb_site": bomb_zone,
+            "round_time_s": round((self.demo.round_bounds(rnum)[1] - tick) / 64.0, 1)
+            if self.demo.round_bounds(rnum) else None,
+            "alive_counts": {str(k): v for k, v in _alive.items()},
+        }
+
+        info_dict = dict(last_seen)  # information.py reads zone per enemy
         return {
             "last_seen_enemies": {str(e): {"pos": v["pos"], "tick": v["tick"],
-                                           "source": v["source"]}
+                                           "source": v["source"], "zone": v.get("zone")}
                                   for e, v in last_seen.items()},
             "n_known_enemies": len(last_seen),
+            "known_enemy_count": len(last_seen),
+            "known_enemy_zones": known_enemy_zones,
+            "known_enemy_directions": known_enemy_directions,
+            "time_since_last_known_enemy_update": time_since_last_known_enemy_update,
+            "time_since_visual_contact": time_since_visual_contact,
+            "time_since_damage_contact": time_since_damage_contact,
+            "recent_sound_info": recent_sound,
+            "bomb_known": bomb_known,
+            "bomb_zone": bomb_zone,
+            "bomb_confidence": round(bomb_confidence, 3),
+            "teammate_contact_count": teammate_contact_count,
+            "recent_teammate_kill": recent_teammate_kill,
+            "recent_teammate_death": recent_teammate_death,
+            "objective_information": objective_information,
             "known_spread": spread,
             "nearest_known_enemy": nearest,
             "heard": heard[-20:],

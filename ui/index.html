@@ -60,8 +60,8 @@
 </head>
 <body>
 <header>
-  <h1>PlayerLab <span>V1.1-alpha</span></h1>
-  <span>Improvement Loop + Human Annotation Loop</span>
+  <h1>PlayerLab <span>V1.2.1</span></h1>
+  <span>Context Grounding + Model Intelligence</span>
   <nav>
     <button id="tab-focus" class="on" onclick="goto('focus')">Focus</button>
     <button id="tab-matches" onclick="goto('matches')">Matches</button>
@@ -100,6 +100,17 @@ async function renderFocus(el){
   const { bottlenecks } = await api("/api/bottlenecks");
   const { patterns } = await api("/api/patterns");
   let html = `<h2>CURRENT FOCUS</h2>`;
+  const mi = await api("/api/model-intelligence").catch(()=>null);
+  if (mi && mi.model_intelligence){
+    const m = mi.model_intelligence;
+    const stCls = m.status==="CONNECTED"?"ok":"MEDIUM";
+    html += `<div class="card"><div class="row">
+      <span class="chip ${stCls}">MODEL INTELLIGENCE: ${esc(m.status)}</span>
+      <span class="muted">provider=${esc(m.provider)} model=${esc(m.model_version||"—")}</span>
+      <span class="muted">tasks: ${(m.loaded_tasks||[]).map(esc).join(", ")||"—"}</span>
+    </div>
+    <div class="muted mono" style="font-size:11px;margin-top:6px">${esc(m.note||"")}</div></div>`;
+  }
   if (!focus.length){
     html += `<div class="card"><span class="muted">暂无 ACTIVE TrainingTarget。
       运行: python3 -m playerlab.cli alpha &lt;demo.dem&gt; 后生成；或历史样本不足时返回 INSUFFICIENT_EVIDENCE。</span></div>`;

@@ -1,0 +1,18 @@
+# CS-NET optional dependencies (spec §61): NEVER part of PlayerLab core.
+# Install into a dedicated venv, e.g.:
+#   python3 -m venv .venv-csnet
+#   .venv-csnet\Scripts\pip install -r requirements-csnet.txt
+# PlayerLab core runs without any of these (NullGameModelProvider fallback).
+
+# pinned to the versions available for Python 3.11+ on Windows
+torch>=2.2
+demoparser2>=0.42.0
+huggingface_hub
+PyYAML
+python-snappy
+zstandard
+webdataset
+numpy
+tqdm
+matplotlib
+Flask

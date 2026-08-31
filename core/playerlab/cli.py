@@ -62,6 +62,9 @@ def main(argv=None):
     p_id.add_argument("--format", default="jsonl", choices=("jsonl", "parquet"))
     p_rd = sub.add_parser("responsibility-dataset", help="export responsibility dataset")
     p_rd.add_argument("--out", default="")
+    p_mi = sub.add_parser("model-intelligence", help="Model Intelligence status (CS-NET)")
+    p_mi.add_argument("--provider", default="", help="provider: null | csnet")
+    p_mi.add_argument("--models-dir", default="", help="CS-NET models root dir")
     p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
     p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
     p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
@@ -201,6 +204,17 @@ def main(argv=None):
         out = args.out or os.path.join(os.path.dirname(cfg.db_path), "..", "backtest",
                                        "responsibility_dataset.jsonl")
         print(f"written: {export_responsibility_dataset(db, os.path.abspath(out))}")
+    elif args.cmd == "model-intelligence":
+        from .model_provider import get_provider
+        provider = args.provider or cfg.model_provider
+        kw = {}
+        if args.models_dir:
+            kw["models_dir"] = os.path.abspath(args.models_dir)
+        if cfg.csnet_repo_dir:
+            kw.setdefault("repo_dir", os.path.abspath(cfg.csnet_repo_dir))
+        prov = get_provider(provider, **kw)
+        print(json.dumps(prov.get_metadata(), ensure_ascii=False, indent=1, default=str))
+        print("supported tasks:", prov.get_supported_tasks())
     elif args.cmd == "annotations":
         from .db import DB
         from .annotation import annotation_stats, export_annotations

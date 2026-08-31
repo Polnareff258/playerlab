@@ -42,10 +42,33 @@ RESPONSIBILITY_LABELS = ("SELF_DECISION", "SELF_EXECUTION", "TEAMMATE_DECISION",
                          "NOT_ACTIONABLE", "INSUFFICIENT_EVIDENCE", "UNSURE")
 
 
-def build_review_queue(db: DB, cfg: Config, match_id: str) -> list[dict]:
-    """Create review items for a match: low-confidence high-impact samples,
-    near-threshold detections, and samples that shape target ranking.
-    Respects the per-match budget (spec §23-§24)."""
+def build_review_queue(db: DB, cfg: Config, match_id: str,
+                       review_focus: str = "balanced") -> list[dict]:
+    """Create review items for a match with per-category quotas (spec §16-§18).
+
+    Default quota: Intent 3 / Responsibility 2 / Pattern 2 / Other 1 = 8
+    (configurable via cfg.review_quota / cfg.review_focus). Dynamic focus
+    (spec §17): 'intent' / 'responsibility' / 'pattern' raise that quota at
+    the expense of others. Priority (spec §18): intent top-1/top-2 closeness,
+    responsibility conflicts, LOW-confidence tradeability, rule-vs-model
+    disagreement, TrainingTarget key samples.
+    """
+    quota = dict(getattr(cfg, "review_quota", None) or
+                 {"intent": 3, "responsibility": 2, "pattern": 2, "other": 1})
+    budget = int(getattr(cfg, "review_budget_per_match", 8)) or sum(quota.values())
+    focus = review_focus or getattr(cfg, "review_focus", "balanced")
+    if focus == "intent":
+        quota = {"intent": quota.get("intent", 3) + 2, "responsibility": 1,
+                 "pattern": 1, "other": 0}
+    elif focus == "responsibility":
+        quota = {"intent": 1, "responsibility": quota.get("responsibility", 2) + 2,
+                 "pattern": 1, "other": 0}
+    elif focus == "pattern":
+        quota = {"intent": 1, "responsibility": 1,
+                 "pattern": quota.get("pattern", 2) + 2, "other": 0}
+    elif focus == "other":
+        quota = {"intent": 0, "responsibility": 0, "pattern": 0, "other": quota.get("other", 1) + 2}
+
     items = []
     # pattern samples
     for ptype in ("repeek", "move_shoot", "advantage"):
@@ -86,18 +109,21 @@ def build_review_queue(db: DB, cfg: Config, match_id: str) -> list[dict]:
                 "rationale": f"root-cause layers conflict (macro={rc['macro']}, micro={rc['micro']})",
                 "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
-    # V1.2: intent / role / responsibility ambiguity (spec §46)
-    for ce in db.get_context_events(match_id, limit=2000):
+    # V1.2.1: intent / responsibility ambiguity with new priorities (§18)
+    for ce in db.get_context_events(match_id, limit=4000):
         dist = ce.get("intent_dist") or {}
         cands = [k for k, _ in sorted(dist.items(), key=lambda kv: -kv[1])][:2]
-        if ce["intent"] == "AMBIGUOUS":
+        top_close = (len(cands) >= 2
+                     and ce["intent"] in ("ROTATE", "SOFT_ROTATE", "REPOSITION")
+                     and (dist.get(cands[0], 0) - dist.get(cands[1], 0)) <= 0.12)
+        if ce["intent"] == "AMBIGUOUS" or top_close:
             items.append({
                 "id": f"{ce['id']}-intent", "match_id": match_id, "round": ce["round"],
                 "tick": ce["tick"], "event_id": ce["event_ref"], "dp_id": None,
-                "item_type": "intent", "priority": round(0.62, 3),
-                "model_prediction": "AMBIGUOUS",
+                "item_type": "intent", "priority": round(0.62 + (0.15 if top_close else 0.0), 3),
+                "model_prediction": ce["intent"] if ce["intent"] != "AMBIGUOUS" else "AMBIGUOUS",
                 "model_confidence": ce["intent_conf"],
-                "rationale": f"intent ambiguity: {ce['intent_dist']}",
+                "rationale": f"intent ambiguity/top-close: {ce['intent_dist']}",
                 "candidates": cands,
                 "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
@@ -111,8 +137,54 @@ def build_review_queue(db: DB, cfg: Config, match_id: str) -> list[dict]:
                 "candidates": cands,
                 "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
+        # responsibility conflict / low-confidence tradeability
+        resp = ce.get("responsibility")
+        trade = (ce.get("temporal_summary") or {}).get("tradeability")
+        resp_conflict = resp in ("SHARED", "INSUFFICIENT_EVIDENCE")
+        low_trade = trade and trade.get("classification") == "LOW" \
+            and trade.get("confidence", 1.0) < 0.5
+        if (resp_conflict or low_trade) and ce["anchor"] == "death":
+            items.append({
+                "id": f"{ce['id']}-resp", "match_id": match_id, "round": ce["round"],
+                "tick": ce["tick"], "event_id": ce["event_ref"], "dp_id": None,
+                "item_type": "responsibility", "priority": round(0.7, 3),
+                "model_prediction": resp or "UNKNOWN", "model_confidence": ce.get("intent_conf", 0.5),
+                "rationale": f"responsibility {'conflict' if resp_conflict else 'low-confidence tradeability'}: "
+                             f"attribution={resp}",
+                "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+
+    # quota allocation: stable ordering (priority desc), cap per category
     items.sort(key=lambda i: i["priority"], reverse=True)
-    return items[: cfg.review_budget_per_match]
+    buckets = {"intent": [], "responsibility": [], "pattern": [], "other": []}
+    for it in items:
+        t = it["item_type"]
+        if t in ("intent", "responsibility"):
+            buckets[t].append(it)
+        elif t.endswith("_sample") or t == "root_cause":
+            buckets["pattern"].append(it)
+        else:
+            buckets["other"].append(it)
+    picked = []
+    counts = {"intent": 0, "responsibility": 0, "pattern": 0, "other": 0}
+    for cat, cap in quota.items():
+        for it in buckets.get(cat, []):
+            if counts[cat] >= cap:
+                break
+            picked.append(it)
+            counts[cat] += 1
+    # fill the remaining budget from any category, still respecting quotas
+    if len(picked) < budget:
+        rest = [it for it in items if it not in picked]
+        for it in rest:
+            if len(picked) >= budget:
+                break
+            cat = it["item_type"] if it["item_type"] in counts else "other"
+            if counts.get(cat, 0) >= quota.get(cat, 99):
+                continue
+            picked.append(it)
+            counts[cat] = counts.get(cat, 0) + 1
+    return picked[:budget]
 
 
 def persist_review_queue(db: DB, items: list[dict]):
@@ -251,13 +323,18 @@ def export_responsibility_dataset(db: DB, out_path: str) -> str:
         for ce in db.get_context_events(limit=5000):
             if ce["anchor"] != "death":
                 continue
+            ts = ce.get("temporal_summary") or {}
             fh.write(json.dumps({
                 "match_id": ce["match_id"], "round": ce["round"], "tick": ce["tick"],
                 "steamid": ce["steamid"], "commitment": ce["commitment"],
                 "role": ce["role"], "intent": ce["intent"],
                 "feasibility": ce["feasibility"],
                 "attribution": ce["responsibility"],
-                "temporal": ce["temporal_summary"],
-                "model_version": "alpha-1", "rule_version": "v1.2-1",
+                "gate": ts.get("responsibility_gate"),
+                "tradeability": ts.get("tradeability"),
+                "information_strength": ts.get("information_strength"),
+                "information_direction": ts.get("information_direction"),
+                "temporal": ts,
+                "model_version": "alpha-1", "rule_version": "v1.2.1-1",
             }, ensure_ascii=False) + "\n")
     return out_path

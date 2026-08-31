@@ -1,4 +1,4 @@
-# PlayerLab V1 — Counterfactual CS2 Decision Intelligence
+# PlayerLab V1.2.1 — Context Grounding + Optional Model Intelligence
 
 本地优先的 CS2 Demo 分析项目。核心目标：
 
@@ -10,6 +10,10 @@ V1 优先证明一条链真实、可靠、可追溯地工作：
 ```
 DecisionPoint → GameState → Similar State Retrieval → Counterfactual Comparison
 ```
+
+V1.2.1 升级：**Context Grounding**（KnownState 序列 + InformationStrength/Direction
++ Tradeability + 保守责任归因 + Review Quota）+ **Optional Model Intelligence**
+（GameModelProvider / Null / CSNetProvider，CS-NET 作为可选后端）。
 
 ## 与 DAK Studio 的关系
 
@@ -60,11 +64,42 @@ python3 -m playerlab.cli api --port 8125               # UI：首页 = CURRENT F
 
 在 alpha 之上增加**上下文理解层**：TemporalContext（4s 窗口）、CommitmentState（11 态，事件≠承诺）、ActionFeasibility（6 态规则引擎）、SituationalRole（15 态动态职责）、Intent Rule Baseline（ROTATE/SOFT_ROTATE/REPOSITION/HOLD…+概率+AMBIGUOUS）、ResponsibilityAttribution（8 类，commitment≠免责、outcome 独立）。详见 [docs/V1_2_RESULTS.md](docs/V1_2_RESULTS.md)。
 
+### V1.2.1 — Context Grounding + CS-NET Integration Spike（已实现）
+
+在 V1.2 之上增加：
+
+1. **KnownState Grounding**：PlayerKnownState 真正接入 TemporalContext 与 IntentSample（540 样本全覆盖）——known_enemy_count/zones/directions、time_since_*、bomb_known/zone/confidence、teammate_contact、objective_information；IntentSample v2 含 `known_state_sequence / information_sequence / motion_features / structural_features / known_state_features / information_features / round_id / episode_id`（split metadata，防泄漏）。
+2. **InformationStrength / InformationDirection**（`information.py`，LLM-free）：视觉/伤害/bomb/公共 feed/声音 + 时间衰减 → NONE..CONFIRMED；方向 A/B/Mid/Unknown。**Intent 学「为什么」**：同轨迹不同信息 → ROTATE vs REPOSITION 不同判定（spec §74-A 测试覆盖）。
+3. **Tradeability**（`tradeability.py`）：direct_distance / nav_distance / direct_los / response_time / lane / cover / commitment 约束 → HIGH..UNKNOWN 分类（内部保留 score）；无 LOS/nav 几何时保守封顶 MEDIUM，不伪造精度（spec §8）。
+4. **Responsibility 保守校准**：四门 gate（Evidence/Feasible/Alternative/Causal）+ tradeability 参与；SELF_DECISION 76.9% → 17.7%（真实 demo，抽样人工审查 96% 可辩护）。详见 [docs/RESPONSIBILITY_CALIBRATION.md](docs/RESPONSIBILITY_CALIBRATION.md)。
+5. **Review Quota**：intent 3 / responsibility 2 / pattern 2 / other 1（可配置）+ `review_focus`（balanced/intent/responsibility/pattern/other）+ 新优先级（top-close、responsibility conflict、low-confidence tradeability）。
+6. **Optional Model Intelligence**（`model_provider.py`）：`GameModelProvider` 接口 + `NullGameModelProvider`（默认，无 CS-NET 时完整运行）+ `CSNetProvider`（CS-NET 适配器，win_rate 真实推理已通过）。
+
+    - **CS-NET 是 optional**（spec §60）：不安装不影响任何 PlayerLab 功能；安装见下。
+    - 依赖隔离：`requirements-csnet.txt`（torch 等不进 PlayerLab core）。
+    - 权重不入 git（`external/cs-net/` 已 gitignore）；版本锁定 `external/cs-net/VERSION.lock`。
+    - 详见 [docs/CSNET_INTEGRATION_REPORT.md](docs/CSNET_INTEGRATION_REPORT.md) 与 [docs/CSNET_FIELD_MAPPING.md](docs/CSNET_FIELD_MAPPING.md)。
+
 ```powershell
 python3 -m playerlab.cli context-eval                 # intent/role/commitment/responsibility agreement
-python3 -m playerlab.cli intent-dataset --out ..\backtest\intent.jsonl    # tiny-model 数据集（540 条）
+python3 -m playerlab.cli intent-dataset --out ..\backtest\intent.jsonl    # tiny-model 数据集（含 KnownState/信息特征）
 python3 -m playerlab.cli responsibility-dataset --out ..\backtest\resp.jsonl
-# Review 页新增 intent 标注（ROTATE/SOFT_ROTATE/…）与 Preference A/B 候选
+python3 -m playerlab.cli model-intelligence           # Model Intelligence 状态（默认 Null）
+python3 -m playerlab.cli model-intelligence --provider csnet   # 已装 CS-NET 时显示 CONNECTED + tasks
+# Review 页新增 intent 标注（ROTATE/SOFT_ROTATE/…）与 Preference A/B 候选；Focus 页新增 Model Intelligence 卡片
+```
+
+**CS-NET 可选安装**（spec §61/§62，失败不影响核心）：
+
+```powershell
+cd playerlab
+git clone https://github.com/Gary2005/cs-net.git external/cs-net   # 或解压 zipball；commit 见 VERSION.lock
+python3 -m pip install torch --index-url https://download.pytorch.org/whl/cpu   # CPU；或 cu126 换 GPU
+python3 -m pip install -r requirements-csnet.txt     # 可选依赖（torch 已装可跳过）
+# 权重随仓库分发（cs-net-models/*.pt，各 ~36MB）；或 python -m scripts.download_model（HF 镜像）
+# 验证：
+python3 -m playerlab.cli model-intelligence --provider csnet
+# 期望：status=ready, tasks=["win_rate"]
 ```
 
 ## 阶段状态

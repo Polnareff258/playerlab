@@ -105,12 +105,17 @@ def _softmax(scores: dict) -> dict:
 
 def classify_intent(demo: IngestedDemo, cfg: Config, tc: TemporalContext,
                     steamid: int, tick: int) -> tuple[str, float, dict]:
-    """Rule-baseline intent classification (spec §16-§17)."""
+    """Rule-baseline intent classification (spec §16-§17), information-aware.
+
+    V1.2.1 (spec §6): the same movement trajectory must classify differently
+    when the *information* differs. ROTATE requires strong information in the
+    direction of travel; with no information the same movement is REPOSITION /
+    GATHER_INFO. Distance/zone counts alone never decide rotation.
+    """
     scores = {k: 0.0 for k in INTENTS}
     moving = tc.time_moving_ticks >= 8
     stationary = tc.time_moving_ticks <= 4
     zc = tc.zone_crossings
-    # responsibility zone: first zone in trajectory
     resp_zone = tc.zone_sequence[0] if tc.zone_sequence else None
     head_zone = tc.zone_sequence[-1] if tc.zone_sequence else None
     head = tc.trajectory[-1] if tc.trajectory else None
@@ -121,18 +126,32 @@ def classify_intent(demo: IngestedDemo, cfg: Config, tc: TemporalContext,
         moved_dist = ((head["pos"][0] - org["pos"][0]) * (b[1] - b[0])) ** 2
         moved_dist += ((head["pos"][1] - org["pos"][1]) * (b[3] - b[2])) ** 2
         moved_dist = moved_dist ** 0.5
-    opp_side_signal = (tc.bomb_planted and tc.bomb_site in ("A", "B")
-                       and tc.bomb_site != _side_zone(resp_zone)) or tc.n_known_enemies >= 2
+
+    # ---- V1.2.1 information grounding (spec §6) ------------------------------
+    # Where does the player's own information point? (A / B / Mid / Unknown)
+    info_dir = getattr(tc, "information_direction", "UNKNOWN")
+    info_strength = getattr(tc, "information_strength", "NONE")
+    info_score = getattr(tc, "information_strength_score", 0.0)
+    info_strong = info_strength in ("STRONG", "CONFIRMED") or info_score >= 0.7
+    info_medium = info_strength in ("MEDIUM", "STRONG", "CONFIRMED") or info_score >= 0.45
+    # Does the direction of travel match where the information is?
+    travel_zone = head_zone if head_zone in ("A", "B") else None
+    info_zone = {"A_SIDE": "A", "B_SIDE": "B"}.get(info_dir)
+    moving_toward_info = bool(travel_zone and info_zone and travel_zone == info_zone)
+    # bomb is public info; leaving the non-bomb site toward it is a rotation
+    bomb_opposite = (tc.bomb_planted and tc.bomb_site in ("A", "B")
+                     and tc.bomb_site != _side_zone(resp_zone))
+    opp_side_signal = bomb_opposite or (tc.n_known_enemies >= 2 and info_strong)
 
     if stationary:
         scores["HOLD"] += 1.6
         scores["CONTEST"] += 0.4
     if moving:
         if zc >= cfg.rotation_min_zone_crossings and moved_dist >= cfg.rotation_min_dist \
-                and opp_side_signal and tc.heading_consistency >= 0.5:
+                and (opp_side_signal or moving_toward_info) and tc.heading_consistency >= 0.5:
             scores["ROTATE"] += 2.0
         elif zc >= 1 and moved_dist >= cfg.rotation_min_dist * 0.5 and \
-                (opp_side_signal or tc.heading_consistency >= 0.6):
+                (moving_toward_info and info_medium or tc.heading_consistency >= 0.6):
             scores["SOFT_ROTATE"] += 1.6
         elif zc <= 1 and moved_dist <= cfg.reposition_max_dist:
             scores["REPOSITION"] += 1.4

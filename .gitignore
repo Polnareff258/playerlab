@@ -3,6 +3,14 @@ data/
 backtest/
 spike/probe_out.json
 spike/probe2_out.json
+spike/*.b64
+.tmp-pip/
+
+# ---- external vendored repos (CS-NET clone + weights, spec §25) ----
+external/cs-net/
+external/*.zip
+external/models/csnet/
+data/models/csnet/
 
 # ---- python ----
 __pycache__/

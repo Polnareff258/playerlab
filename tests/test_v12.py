@@ -196,7 +196,9 @@ def test_responsibility_reload_mistake():
 
 def test_responsibility_outcome_independence():
     """Good outcome != good decision; bad outcome != bad decision (§54-§55).
-    The attribution function must not receive outcome as input at all."""
+    The attribution function must not receive outcome as input at all.
+    V1.2.1 (spec §11): with no evidence of a choice, even a POOR evaluation
+    must not be forced to SELF_DECISION — INSUFFICIENT_EVIDENCE is preferred."""
     cfg = Config()
     demo = FakeDemo(PLAYERS, EMPTY_EVENTS, ROUNDS)
     idx = trajectory_idx([(0, 0, "A")] * 17)
@@ -205,9 +207,13 @@ def test_responsibility_outcome_independence():
     sig = inspect.signature(attribute_responsibility)
     assert "outcome" not in sig.parameters  # structurally outcome-free
     resp_bad = attribute_responsibility(demo, cfg, tc, P1, 256, decision_eval="POOR")
-    assert resp_bad["attribution"] == "SELF_DECISION"  # poor decision even if outcome were good
+    # no evidence (free, no contact, no known enemies) -> conservative
+    assert resp_bad["attribution"] in ("SELF_DECISION", "INSUFFICIENT_EVIDENCE",
+                                       "SHARED"), resp_bad
+    assert resp_bad["gate"]["evidence_sufficient"] is False
     resp_good = attribute_responsibility(demo, cfg, tc, P1, 256, decision_eval="REASONABLE")
-    assert resp_good["attribution"] in ("REASONABLE_BUT_LOST", "SELF_DECISION")
+    assert resp_good["attribution"] in ("REASONABLE_BUT_LOST", "SELF_DECISION",
+                                        "INSUFFICIENT_EVIDENCE"), resp_good
 
 
 # ---------------------------------------------------------------- annotation + reference

@@ -97,11 +97,14 @@ class TemporalContext:
                     p = pos_at(self.idx, s, self.tick)
                     mypos = pos_at(self.idx, self.steamid, self.tick)
                     if p and mypos:
-                        mates.append({"steamid": s, "dist": math.hypot(p[0] - mypos[0], p[1] - mypos[1])})
+                        mates.append({"steamid": s, "dist": math.hypot(p[0] - mypos[0], p[1] - mypos[1]),
+                                      "pos": p})
         self.alive = alive
         self.team_alive = alive.get(my_team, 0)
         self.enemy_alive = alive.get(3 if my_team == 2 else 2, 0)
         mates.sort(key=lambda m: m["dist"])
+        self.mates = mates
+        self.nearest_teammate = mates[0] if mates else None
         self.nearest_teammate_dist = mates[0]["dist"] if mates else None
         self.trade_support = ("HIGH" if (mates and mates[0]["dist"] <= 1600.0)
                               else "MED" if (mates and mates[0]["dist"] <= 3200.0) else "LOW")
@@ -149,6 +152,27 @@ class TemporalContext:
         self.info_update_recency = min(999, min(
             (self.tick - v["tick"] for v in self.known.get("last_seen_enemies", {}).values()),
             default=999))
+        # V1.2.1: information strength / direction (LLM-free, spec §3-§4)
+        now_visual = self.known.get("time_since_visual_contact") == 0
+        from .information import compute_information_strength, compute_information_direction
+        info_strength = compute_information_strength(self.known, self.tick, now_visual=now_visual)
+        info_dir = compute_information_direction(self.known)
+        self.information_strength = info_strength["level"]
+        self.information_strength_score = info_strength["confidence"]
+        self.information_direction = info_dir["direction"]
+        self.information_direction_confidence = info_dir["confidence"]
+        self.information_components = info_strength["components"]
+        self.time_since_last_known_enemy_update = self.known.get("time_since_last_known_enemy_update")
+        self.time_since_visual_contact = self.known.get("time_since_visual_contact")
+        self.time_since_damage_contact = self.known.get("time_since_damage_contact")
+        self.recent_sound_info = self.known.get("recent_sound_info", [])
+        self.bomb_known = self.known.get("bomb_known", False)
+        self.bomb_zone = self.known.get("bomb_zone")
+        self.bomb_confidence = self.known.get("bomb_confidence", 0.0)
+        self.teammate_contact_count = self.known.get("teammate_contact_count", 0)
+        self.recent_teammate_kill = self.known.get("recent_teammate_kill", False)
+        self.recent_teammate_death = self.known.get("recent_teammate_death", False)
+        self.objective_information = self.known.get("objective_information", {})
 
     def summary(self) -> dict:
         """Compact serializable summary (for context_events / review)."""
@@ -167,6 +191,17 @@ class TemporalContext:
             "objective_urgency": self.objective_urgency,
             "n_known_enemies": self.n_known_enemies,
             "info_update_recency": self.info_update_recency,
+            "information_strength": self.information_strength,
+            "information_strength_score": self.information_strength_score,
+            "information_direction": self.information_direction,
+            "information_direction_confidence": self.information_direction_confidence,
+            "time_since_visual_contact": self.time_since_visual_contact,
+            "time_since_damage_contact": self.time_since_damage_contact,
+            "bomb_known": self.bomb_known, "bomb_zone": self.bomb_zone,
+            "bomb_confidence": self.bomb_confidence,
+            "teammate_contact_count": self.teammate_contact_count,
+            "recent_teammate_kill": self.recent_teammate_kill,
+            "recent_teammate_death": self.recent_teammate_death,
             "norm_origin": self.trajectory[0]["pos"] if self.trajectory else None,
             "norm_head": self.trajectory[-1]["pos"] if self.trajectory else None,
         }
