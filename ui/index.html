@@ -169,6 +169,19 @@ async function renderReview(el){
   let html = `<h2>Review Queue <span class="muted">(每场 3–5 条，低置信高影响优先)</span></h2>`;
   if (!review.length) html += `<div class="card"><span class="muted">暂无待审样本（标注会写入 HumanAnnotation，预测与纠正分离保存）</span></div>`;
   for (const it of review){
+    const isIntent = it.item_type === "intent";
+    const intentBtns = isIntent ? `
+      <div class="row" style="margin-top:8px">
+        <span class="muted" style="font-size:12px">Intent 更接近?</span>
+        ${["ROTATE","SOFT_ROTATE","REPOSITION","GATHER_INFO","HOLD","OTHER","UNSURE"].map(l=>
+          `<button class="btn" onclick="annotateType('${it.id}','intent','${l}')">${l}</button>`).join("")}
+      </div>` : "";
+    const prefBtns = isIntent && it.candidates && it.candidates.length >= 2 ? `
+      <div class="row" style="margin-top:6px">
+        <span class="muted" style="font-size:12px">偏好哪个候选?</span>
+        <button class="btn" onclick="pref('${it.id}','${it.candidates[0]}')">${it.candidates[0]}</button>
+        <button class="btn" onclick="pref('${it.id}','${it.candidates[1]}')">${it.candidates[1]}</button>
+      </div>` : "";
     html += `<div class="rev">
       <div class="row"><span class="chip">${esc(it.item_type)}</span>
         <span class="mono muted">r${it.round} t${it.tick}</span>
@@ -187,7 +200,7 @@ async function renderReview(el){
              "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option>${c}</option>`).join("")}
         </select>
         <input id="cm-${it.id}" placeholder="备注（可选）" style="max-width:180px">
-      </div>
+      </div>${intentBtns}${prefBtns}
     </div>`;
   }
   const stats = await api("/api/annotations/stats").catch(()=>({}));
@@ -203,6 +216,23 @@ async function annotate(reviewId, label){
       body: JSON.stringify({annotation_type:"behavior_detection", human_label:label,
                             human_confidence:0.8, reason_code:rc, optional_comment:cm})});
     toast("标注已保存"); goto("review");
+  } catch(e){ toast(e.message); }
+}
+async function annotateType(reviewId, type, label){
+  try {
+    await api("/api/review/"+reviewId+"/annotation", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({annotation_type:type, human_label:label,
+                            human_confidence:0.7, reason_code:"OTHER"})});
+    toast(type+" 标注已保存"); goto("review");
+  } catch(e){ toast(e.message); }
+}
+async function pref(reviewId, choice){
+  try {
+    await api("/api/review/"+reviewId+"/preference", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({human_choice:choice, human_confidence:0.6, reason_code:"OTHER"})});
+    toast("Preference 已保存"); goto("review");
   } catch(e){ toast(e.message); }
 }
 

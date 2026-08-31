@@ -56,6 +56,17 @@ python3 -m playerlab.cli annotations stats | annotations export --out ..\backtes
 python3 -m playerlab.cli api --port 8125               # UI：首页 = CURRENT FOCUS；Review 卡可标注
 ```
 
+### V1.2 — Context & Intent Spike（已实现）
+
+在 alpha 之上增加**上下文理解层**：TemporalContext（4s 窗口）、CommitmentState（11 态，事件≠承诺）、ActionFeasibility（6 态规则引擎）、SituationalRole（15 态动态职责）、Intent Rule Baseline（ROTATE/SOFT_ROTATE/REPOSITION/HOLD…+概率+AMBIGUOUS）、ResponsibilityAttribution（8 类，commitment≠免责、outcome 独立）。详见 [docs/V1_2_RESULTS.md](docs/V1_2_RESULTS.md)。
+
+```powershell
+python3 -m playerlab.cli context-eval                 # intent/role/commitment/responsibility agreement
+python3 -m playerlab.cli intent-dataset --out ..\backtest\intent.jsonl    # tiny-model 数据集（540 条）
+python3 -m playerlab.cli responsibility-dataset --out ..\backtest\resp.jsonl
+# Review 页新增 intent 标注（ROTATE/SOFT_ROTATE/…）与 Preference A/B 候选
+```
+
 ## 阶段状态
 
 - [x] 阶段 1：现有项目研究 → EXISTING_PROJECTS.md

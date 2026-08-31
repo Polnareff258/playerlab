@@ -16,6 +16,7 @@ import uuid
 from .config import Config
 from .db import DB
 from .stats import wilson_ci
+from .intent import ROLES
 
 MODEL_VERSION = "alpha-1"
 RULE_VERSION = "alpha-1"
@@ -25,7 +26,20 @@ REASON_CODES = ["TEAM_CALL", "COORDINATED_PEEK", "MISSING_AUDIO", "MISSING_VISUA
                 "WRONG_ACTION_CLASSIFICATION", "WRONG_TIMING", "WRONG_INFORMATION_ASSUMPTION",
                 "WRONG_RISK_ESTIMATE", "EXECUTION_NOT_DECISION", "OTHER"]
 
-ANNOTATION_TYPES = ("behavior_detection", "decision_quality", "root_cause", "target_feedback")
+ANNOTATION_TYPES = ("behavior_detection", "decision_quality", "root_cause",
+                    "target_feedback", "intent", "situational_role",
+                    "commitment_state", "action_feasibility", "responsibility")
+
+INTENT_LABELS = ("ROTATE", "SOFT_ROTATE", "REPOSITION", "GATHER_INFO", "HOLD",
+                 "CONTEST", "SUPPORT", "TRADE", "PLANT", "DEFUSE", "OTHER", "UNSURE")
+ROLE_LABELS = tuple([*ROLES] + ["OTHER", "UNSURE"])
+COMMITMENT_LABELS = ("FREE", "PLANT_INTENT", "PLANT_COMMITTED", "DEFUSE_INTENT",
+                     "DEFUSE_COMMITTED", "RELOAD_COMMITTED", "UTILITY_COMMITTED",
+                     "ENGAGEMENT_COMMITTED", "DISENGAGE_COMMITTED", "SAVE_COMMITTED",
+                     "UNKNOWN", "UNSURE")
+RESPONSIBILITY_LABELS = ("SELF_DECISION", "SELF_EXECUTION", "TEAMMATE_DECISION",
+                         "TEAMMATE_EXECUTION", "SHARED", "REASONABLE_BUT_LOST",
+                         "NOT_ACTIONABLE", "INSUFFICIENT_EVIDENCE", "UNSURE")
 
 
 def build_review_queue(db: DB, cfg: Config, match_id: str) -> list[dict]:
@@ -70,6 +84,31 @@ def build_review_queue(db: DB, cfg: Config, match_id: str) -> list[dict]:
                 "item_type": "root_cause", "priority": round(0.6, 3),
                 "model_prediction": rc["primary_cause"], "model_confidence": rc["confidence"],
                 "rationale": f"root-cause layers conflict (macro={rc['macro']}, micro={rc['micro']})",
+                "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+    # V1.2: intent / role / responsibility ambiguity (spec §46)
+    for ce in db.get_context_events(match_id, limit=2000):
+        dist = ce.get("intent_dist") or {}
+        cands = [k for k, _ in sorted(dist.items(), key=lambda kv: -kv[1])][:2]
+        if ce["intent"] == "AMBIGUOUS":
+            items.append({
+                "id": f"{ce['id']}-intent", "match_id": match_id, "round": ce["round"],
+                "tick": ce["tick"], "event_id": ce["event_ref"], "dp_id": None,
+                "item_type": "intent", "priority": round(0.62, 3),
+                "model_prediction": "AMBIGUOUS",
+                "model_confidence": ce["intent_conf"],
+                "rationale": f"intent ambiguity: {ce['intent_dist']}",
+                "candidates": cands,
+                "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+        elif ce["intent"] in ("ROTATE", "SOFT_ROTATE", "REPOSITION"):
+            items.append({
+                "id": f"{ce['id']}-intent", "match_id": match_id, "round": ce["round"],
+                "tick": ce["tick"], "event_id": ce["event_ref"], "dp_id": None,
+                "item_type": "intent", "priority": round(0.3 + ce["intent_conf"] * 0.3, 3),
+                "model_prediction": ce["intent"], "model_confidence": ce["intent_conf"],
+                "rationale": f"intent candidate: {ce['intent_dist']}",
+                "candidates": cands,
                 "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
     items.sort(key=lambda i: i["priority"], reverse=True)
@@ -142,6 +181,11 @@ def _agreement(ann) -> bool | None:
                 or (mp == "QUESTIONABLE" and hl == "UNCERTAIN") or hl == "CORRECT")
     if t == "root_cause":
         return hl in ("None of these",) and False or hl == "Mixed" or mp in hl.split(",")
+    if t in ("intent", "situational_role", "commitment_state", "action_feasibility",
+             "responsibility"):
+        if hl in ("UNSURE", "OTHER"):
+            return None
+        return mp == hl
     return None
 
 
@@ -177,4 +221,43 @@ def export_annotations(db: DB, out_path: str) -> str:
     with open(out_path, "w", encoding="utf-8") as fh:
         for a in db.get_annotations():
             fh.write(json.dumps(a, ensure_ascii=False) + "\n")
+    return out_path
+
+
+def export_intent_dataset(db: DB, out_path: str, fmt: str = "jsonl") -> str:
+    """Export IntentSample rows (§49): JSONL always; Parquet when pyarrow exists."""
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    rows = db.get_intent_samples()
+    if fmt == "jsonl" or out_path.endswith(".jsonl"):
+        with open(out_path, "w", encoding="utf-8") as fh:
+            for s in rows:
+                fh.write(json.dumps(s, ensure_ascii=False) + "\n")
+        return out_path
+    try:
+        import pandas as pd  # noqa: F401
+        pd.DataFrame(rows).to_parquet(out_path, index=False)
+        return out_path
+    except Exception:  # noqa: BLE001
+        with open(out_path, "w", encoding="utf-8") as fh:
+            for s in rows:
+                fh.write(json.dumps(s, ensure_ascii=False) + "\n")
+        return out_path
+
+
+def export_responsibility_dataset(db: DB, out_path: str) -> str:
+    """Responsibility attribution rows (death-anchored context events)."""
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        for ce in db.get_context_events(limit=5000):
+            if ce["anchor"] != "death":
+                continue
+            fh.write(json.dumps({
+                "match_id": ce["match_id"], "round": ce["round"], "tick": ce["tick"],
+                "steamid": ce["steamid"], "commitment": ce["commitment"],
+                "role": ce["role"], "intent": ce["intent"],
+                "feasibility": ce["feasibility"],
+                "attribution": ce["responsibility"],
+                "temporal": ce["temporal_summary"],
+                "model_version": "alpha-1", "rule_version": "v1.2-1",
+            }, ensure_ascii=False) + "\n")
     return out_path

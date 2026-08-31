@@ -21,6 +21,11 @@ from .db import DB
 from .counterfactual import retrieve, what_if
 
 
+def _intent_dist(db: DB) -> dict:
+    from collections import Counter
+    return dict(Counter(s.get("rule_prediction") for s in db.get_intent_samples()))
+
+
 def _json(handler, obj, code=200):
     body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
     handler.send_response(code)
@@ -111,6 +116,11 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                 elif path == "/api/annotations/stats":
                     from .annotation import annotation_stats
                     _json(self, annotation_stats(db))
+                elif path == "/api/context":
+                    _json(self, {"context": db.get_context_events(limit=200)})
+                elif path == "/api/intent-samples":
+                    _json(self, {"samples": len(db.get_intent_samples()),
+                                 "intent_distribution": _intent_dist(db)})
                 else:
                     _json(self, {"error": "not found"}, 404)
             except Exception as e:  # noqa: BLE001

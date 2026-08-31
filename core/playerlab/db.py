@@ -126,6 +126,37 @@ CREATE INDEX IF NOT EXISTS idx_ann_match ON human_annotations (match_id);
 CREATE INDEX IF NOT EXISTS idx_rq_status ON review_queue (status, priority);
 """
 
+# V1.2 context & intent schema (schema_version = 3). Additive + one ALTER on
+# root_causes (guarded by column-existence check).
+V12_SCHEMA = """
+CREATE TABLE IF NOT EXISTS context_events (
+    id TEXT PRIMARY KEY, match_id TEXT, round INTEGER, tick INTEGER, steamid INTEGER,
+    anchor TEXT, commitment TEXT, role TEXT, role_dist TEXT,
+    intent TEXT, intent_conf REAL, intent_dist TEXT,
+    feasibility TEXT, responsibility TEXT,
+    temporal_summary TEXT, event_ref TEXT, computed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS intent_samples (
+    id TEXT PRIMARY KEY, match_id TEXT, round INTEGER, anchor_tick INTEGER,
+    start_tick INTEGER, end_tick INTEGER,
+    feature_sequence TEXT, hard_events TEXT, player_known_state TEXT,
+    commitment_state TEXT, situational_role TEXT,
+    rule_prediction TEXT, rule_confidence REAL,
+    human_label TEXT, human_confidence REAL, source TEXT,
+    model_version TEXT, extractor_version TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ctx_match ON context_events (match_id);
+CREATE INDEX IF NOT EXISTS idx_int_match ON intent_samples (match_id);
+"""
+
+_ADD_COLUMNS = [
+    ("root_causes", "context", "TEXT"),
+    ("root_causes", "commitment", "TEXT"),
+    ("root_causes", "role", "TEXT"),
+    ("root_causes", "responsibility", "TEXT"),
+    ("review_queue", "candidates", "TEXT"),
+]
+
 
 class DB:
     def __init__(self, path: str):
@@ -149,6 +180,19 @@ class DB:
         if current < 2:
             self.conn.executescript(ALPHA_SCHEMA)
             self.conn.execute("UPDATE schema_version SET version=2")
+        if current < 3:
+            self.conn.executescript(V12_SCHEMA)
+            for table, col, typ in _ADD_COLUMNS:
+                cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+                if col not in cols:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            self.conn.execute("UPDATE schema_version SET version=3")
+        if current < 4:
+            # review_queue.candidates (preference UI) added after v3 shipped
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(review_queue)")]
+            if "candidates" not in cols:
+                self.conn.execute("ALTER TABLE review_queue ADD COLUMN candidates TEXT")
+            self.conn.execute("UPDATE schema_version SET version=4")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -382,12 +426,14 @@ class DB:
         self.conn.execute(
             """INSERT OR REPLACE INTO root_causes
                (event_id, match_id, round, tick, steamid, result, execution, micro, macro,
-                primary_cause, secondary_cause, mechanical_cause, confidence)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                primary_cause, secondary_cause, mechanical_cause, confidence,
+                context, commitment, role, responsibility)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (rc["event_id"], rc["match_id"], rc["round"], rc["tick"], rc["steamid"],
              rc["result"], rc["execution"], rc["micro"], rc["macro"],
              rc["primary_cause"], rc["secondary_cause"], rc["mechanical_cause"],
-             rc["confidence"]))
+             rc["confidence"], rc.get("context"), rc.get("commitment"),
+             rc.get("role"), rc.get("responsibility")))
         self.conn.commit()
 
     def get_root_causes(self, match_id=None):
@@ -512,18 +558,85 @@ class DB:
         self.conn.execute(
             """INSERT OR REPLACE INTO review_queue
                (id, match_id, round, tick, event_id, dp_id, item_type, priority,
-                model_prediction, model_confidence, rationale, status, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                model_prediction, model_confidence, rationale, status, created_at, candidates)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r_["id"], r_["match_id"], r_["round"], r_["tick"], r_["event_id"], r_["dp_id"],
              r_["item_type"], r_["priority"], r_["model_prediction"], r_["model_confidence"],
-             r_["rationale"], r_.get("status", "pending"), r_.get("created_at", "")))
+             r_["rationale"], r_.get("status", "pending"), r_.get("created_at", ""),
+             jd(r_.get("candidates", []))))
         self.conn.commit()
 
     def get_review_queue(self, status="pending", limit=20):
-        return [dict(r) for r in self.conn.execute(
-            "SELECT * FROM review_queue WHERE status=? ORDER BY priority DESC, tick LIMIT ?",
-            (status, limit))]
+        rows = []
+        for r in self.conn.execute(
+                "SELECT * FROM review_queue WHERE status=? ORDER BY priority DESC, tick LIMIT ?",
+                (status, limit)):
+            d = dict(r)
+            d["candidates"] = json.loads(d["candidates"]) if d.get("candidates") else []
+            rows.append(d)
+        return rows
 
     def mark_review_done(self, review_id):
         self.conn.execute("UPDATE review_queue SET status='reviewed' WHERE id=?", (review_id,))
         self.conn.commit()
+
+    # ---- V1.2 context & intent repos ----
+    def upsert_context_event(self, e: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO context_events
+               (id, match_id, round, tick, steamid, anchor, commitment, role, role_dist,
+                intent, intent_conf, intent_dist, feasibility, responsibility,
+                temporal_summary, event_ref, computed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (e["id"], e["match_id"], e["round"], e["tick"], e["steamid"], e["anchor"],
+             e["commitment"], e["role"], jd(e.get("role_dist", {})),
+             e["intent"], e["intent_conf"], jd(e.get("intent_dist", {})),
+             jd(e.get("feasibility", {})), e["responsibility"],
+             jd(e.get("temporal_summary", {})), e.get("event_ref", ""),
+             e.get("computed_at", "")))
+        self.conn.commit()
+
+    def get_context_events(self, match_id=None, limit=200):
+        q = "SELECT * FROM context_events"
+        args = ()
+        if match_id:
+            q += " WHERE match_id=?"
+            args = (match_id,)
+        rows = []
+        for r in self.conn.execute(q + f" ORDER BY tick LIMIT {limit}", args):
+            d = dict(r)
+            for k in ("role_dist", "intent_dist", "feasibility", "temporal_summary"):
+                d[k] = json.loads(d[k])
+            rows.append(d)
+        return rows
+
+    def upsert_intent_sample(self, s: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO intent_samples
+               (id, match_id, round, anchor_tick, start_tick, end_tick, feature_sequence,
+                hard_events, player_known_state, commitment_state, situational_role,
+                rule_prediction, rule_confidence, human_label, human_confidence, source,
+                model_version, extractor_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (s["id"], s["match_id"], s["round"], s["anchor_tick"], s["start_tick"],
+             s["end_tick"], jd(s["feature_sequence"]), jd(s.get("hard_events", {})),
+             jd(s.get("player_known_state", {})), s["commitment_state"], s["situational_role"],
+             s["rule_prediction"], s["rule_confidence"], s.get("human_label"),
+             s.get("human_confidence"), s.get("source", "rule-baseline"),
+             s.get("model_version", "alpha-1"), s.get("extractor_version", "v1.2-1")))
+        self.conn.commit()
+
+    def get_intent_samples(self, match_id=None, limit=1000):
+        q = "SELECT * FROM intent_samples"
+        args = ()
+        if match_id:
+            q += " WHERE match_id=?"
+            args = (match_id,)
+        rows = []
+        for r in self.conn.execute(q + f" ORDER BY anchor_tick LIMIT {limit}", args):
+            d = dict(r)
+            d["feature_sequence"] = json.loads(d["feature_sequence"])
+            d["hard_events"] = json.loads(d["hard_events"])
+            d["player_known_state"] = json.loads(d["player_known_state"])
+            rows.append(d)
+        return rows

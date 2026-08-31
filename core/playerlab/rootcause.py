@@ -12,7 +12,10 @@ LAYERS = ("macro", "micro", "execution")
 
 
 def build_root_causes(demo: IngestedDemo, cfg: Config, db: DB,
-                      idx: dict, advantage_samples: list[dict]) -> list[dict]:
+                      idx: dict, advantage_samples: list[dict],
+                      responsibility_map: dict | None = None,
+                      commitment_map: dict | None = None,
+                      role_map: dict | None = None) -> list[dict]:
     players = {p["steamid"] for p in demo.players}
     metrics = db.get_execution_metrics(demo.demo_id)
     dps = db.get_dps(demo.demo_id)
@@ -71,6 +74,8 @@ def build_root_causes(demo: IngestedDemo, cfg: Config, db: DB,
                           if layers[l][0] and layers[l][0] != primary and layers[l][1] >= 0.4),
                          None)
 
+        key = (steamid, tick)
+        resp = (responsibility_map or {}).get(key) or {}
         out.append({
             "event_id": f"{demo.demo_id}-death-{steamid}-{tick}",
             "match_id": demo.demo_id, "round": demo.round_of_tick(tick),
@@ -80,6 +85,10 @@ def build_root_causes(demo: IngestedDemo, cfg: Config, db: DB,
             "primary_cause": primary, "secondary_cause": secondary,
             "mechanical_cause": execution,
             "confidence": round(max(exec_conf, micro_conf, macro_conf), 3),
+            "context": "TemporalContext(4s)",
+            "commitment": (commitment_map or {}).get(key) or resp.get("commitment"),
+            "role": (role_map or {}).get(key),
+            "responsibility": resp.get("attribution"),
         })
     return out
 

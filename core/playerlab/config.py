@@ -72,6 +72,21 @@ class Config:
         "death": 1.0, "duel_loss": 0.8, "round_loss": 0.7, "positional_loss": 0.4})
     review_budget_per_match: int = 4
 
+    # --- V1.2 context & intent ---
+    context_window_ticks: int = 256      # ~4 s lookback for TemporalContext
+    context_sample_interval: int = 16    # 4 Hz feature timesteps
+    intent_ambiguity_threshold: float = 0.15
+    rotation_min_zone_crossings: int = 2
+    rotation_min_dist: float = 1500.0    # distance from responsibility for ROTATE
+    soft_rotate_max_dist: float = 2600.0
+    reposition_max_dist: float = 1400.0
+    gather_info_dist: float = 2000.0
+    commit_plant_window_ticks: int = 205  # plant ~3.2 s
+    commit_reload_window_ticks: int = 150
+    commit_utility_window_ticks: int = 96
+    commit_engagement_idle_ticks: int = 48
+    responsibility_conf_threshold: float = 0.55
+
     # --- evidence discipline (COUNTERFACTUAL_DESIGN §8) ---
     n_min_claim: int = 10
     n_min_action: int = 5

@@ -49,8 +49,12 @@ def run_alpha(demo: IngestedDemo, cfg: Config, db: DB) -> dict:
     _persist_samples(db, demo_id, "move_shoot", ms_samples)
     _persist_samples(db, demo_id, "advantage", adv_samples)
 
-    # 3) root causes
-    for rc in build_root_causes(demo, cfg, db, idx, adv_samples):
+    # 3) root causes (with V1.2 context / commitment / role / responsibility)
+    from .context_pipeline import run_context
+    ctx = run_context(demo, cfg, db)
+    for rc in build_root_causes(demo, cfg, db, idx, adv_samples,
+                                ctx.get("responsibility_map"),
+                                ctx.get("commitment_map"), ctx.get("role_map")):
         db.upsert_root_cause(rc)
 
     # 4) aggregation + ranking
@@ -65,7 +69,9 @@ def run_alpha(demo: IngestedDemo, cfg: Config, db: DB) -> dict:
     targets = generate_targets(db, cfg, bottlenecks)
     validations = validate_targets(db, cfg)
 
-    # 6) review queue (this match only)
+    # 6) review queue (this match only, idempotent)
+    db.conn.execute("DELETE FROM review_queue WHERE match_id=?", (demo_id,))
+    db.conn.commit()
     items = build_review_queue(db, cfg, demo_id)
     persist_review_queue(db, items)
 
@@ -79,4 +85,6 @@ def run_alpha(demo: IngestedDemo, cfg: Config, db: DB) -> dict:
         "targets": targets,
         "validations": validations,
         "review_items": len(items),
+        "context": {k: ctx[k] for k in ("context_events", "intent_samples",
+                                        "intent_distribution")},
     }

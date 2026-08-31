@@ -56,6 +56,12 @@ def main(argv=None):
     p_ann = sub.add_parser("annotations", help="annotation commands")
     p_ann.add_argument("action", choices=("export", "stats"))
     p_ann.add_argument("--out", default="")
+    sub.add_parser("context-eval", help="context/intent/role/commitment/responsibility agreement")
+    p_id = sub.add_parser("intent-dataset", help="export tiny-model intent dataset")
+    p_id.add_argument("--out", default="")
+    p_id.add_argument("--format", default="jsonl", choices=("jsonl", "parquet"))
+    p_rd = sub.add_parser("responsibility-dataset", help="export responsibility dataset")
+    p_rd.add_argument("--out", default="")
     p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
     p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
     p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
@@ -175,6 +181,26 @@ def main(argv=None):
         for r_ in db.get_review_queue(limit=20):
             print(f"{r_['priority']:.2f} {r_['item_type']:<16} r{r_['round']} t{r_['tick']} "
                   f"pred={r_['model_prediction']} conf={r_['model_confidence']}")
+    elif args.cmd == "context-eval":
+        from .db import DB
+        from .annotation import annotation_stats
+        db = DB(cfg.db_path)
+        print(json.dumps(annotation_stats(db), ensure_ascii=False, indent=1, default=str))
+    elif args.cmd == "intent-dataset":
+        from .db import DB
+        from .annotation import export_intent_dataset
+        db = DB(cfg.db_path)
+        out = args.out or os.path.join(os.path.dirname(cfg.db_path), "..", "backtest",
+                                       f"intent_dataset.{'parquet' if args.format == 'parquet' else 'jsonl'}")
+        print(f"written: {export_intent_dataset(db, os.path.abspath(out), args.format)} "
+              f"({len(db.get_intent_samples())} samples)")
+    elif args.cmd == "responsibility-dataset":
+        from .db import DB
+        from .annotation import export_responsibility_dataset
+        db = DB(cfg.db_path)
+        out = args.out or os.path.join(os.path.dirname(cfg.db_path), "..", "backtest",
+                                       "responsibility_dataset.jsonl")
+        print(f"written: {export_responsibility_dataset(db, os.path.abspath(out))}")
     elif args.cmd == "annotations":
         from .db import DB
         from .annotation import annotation_stats, export_annotations

@@ -25,6 +25,9 @@ EVENT_NAMES = {
     "shots": "weapon_fire",
     "footsteps": "player_footstep",
     "purchases": "item_purchase",
+    "plants_start": "bomb_beginplant",
+    "defuses_start": "bomb_begindefuse",
+    "reloads": "weapon_reload",
 }
 
 SITE_CODE = {97: "A", 98: "B"}
