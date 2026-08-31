@@ -57,7 +57,17 @@ def clean(v):
 
 
 def df_to_records(df) -> list[dict]:
-    return [{k: clean(v) for k, v in rec.items()} for rec in df.to_dict("records")]
+    """Convert a demoparser2 event result to JSON-safe records.
+    Some demos/events return a bare list (empty or raw rows) instead of a
+    DataFrame — tolerate both."""
+    if df is None:
+        return []
+    if isinstance(df, list):
+        return [({k: clean(v) for k, v in rec.items()}
+                 if isinstance(rec, dict) else rec) for rec in df]
+    if hasattr(df, "to_dict"):
+        return [{k: clean(v) for k, v in rec.items()} for rec in df.to_dict("records")]
+    return []
 
 
 @dataclass
@@ -154,15 +164,24 @@ def derive_velocity(df) -> "pd.DataFrame":
 
 def normalize_steamids(records: list[dict]) -> list[dict]:
     """Coerce steamid fields to int (demoparser2 returns them as strings in
-    some events, ints in others — normalize once at the adapter boundary)."""
+    some events, ints in others — normalize once at the adapter boundary).
+    NaN steamids (world/bot kills in some demos) become None."""
     for rec in records:
         for key in STEAMID_KEYS:
             val = rec.get(key)
-            if val is not None:
-                try:
-                    rec[key] = int(val)
-                except (TypeError, ValueError):
-                    pass
+            if val is None:
+                continue
+            try:
+                f = float(val)
+                if f != f:      # NaN guard
+                    rec[key] = None
+                    continue
+            except (TypeError, ValueError):
+                pass
+            try:
+                rec[key] = int(val)
+            except (TypeError, ValueError):
+                rec[key] = None
     return records
 
 
@@ -204,13 +223,23 @@ def parse_demo(demo_path: str, cfg: Config | None = None) -> IngestedDemo:
     planter_team_by_round = {}
     for r in plants.to_dict("records"):
         rnum = None
+        try:
+            t_int = int(r["tick"])
+        except (TypeError, ValueError):
+            continue
         for rr in rounds:
-            if rr["start_tick"] <= int(r["tick"]) <= rr["end_tick"]:
+            if rr["start_tick"] <= t_int <= rr["end_tick"]:
                 rnum = rr["round"]
                 break
         if rnum is None:
             continue
-        steamid = int(r["user_steamid"])
+        raw = r["user_steamid"]
+        try:
+            if raw is None or (isinstance(raw, float) and raw != raw):  # NaN guard
+                continue
+            steamid = int(raw)
+        except (TypeError, ValueError):
+            continue
         team = next((p["team_number"] for p in players if p["steamid"] == steamid), None)
         if team is not None:
             planter_team_by_round[rnum] = team

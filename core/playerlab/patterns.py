@@ -191,7 +191,12 @@ def detect_advantage(demo: IngestedDemo, cfg: Config, db: DB, idx: dict) -> list
             events.append((dmg["tick"], dmg["attacker_steamid"], "dmg", None))
     events.sort()
 
-    death_ticks = {int(k["user_steamid"]): int(k["tick"]) for k in demo.events["kills"]}
+    death_ticks = {}
+    for k in demo.events["kills"]:
+        sid = k.get("user_steamid")
+        if sid is None:
+            continue  # world/suicide kill (no player victim)
+        death_ticks[int(sid)] = int(k["tick"])
     for tick, steamid, kind, dp_id in events:
         alive = _alive_counts(idx, teams, tick)
         my_team = demo.team_of(steamid)

@@ -1,8 +1,34 @@
 # ENGAGEMENT_DUEL_RESULTS.md — Engagement & Duel Execution 实测报告（spec §105）
 
-> 数据：真实 de_dust2 demo（18 局，264.8MB）· V1.3.1 全管线 · 日期：2026-08-31
-> alpha 全管线 **226s/场**（V1.3 144s + duel 序列提取 ~80s）；duel 序列仅对 detected
-> engagement windows 提取（spec §113 性能约束，340/542 episodes 有 duel）。
+> 数据：真实 demo **6 场（3 de_dust2 + 3 de_mirage，共 128 局，1.3GB）** · V1.3.1 全管线
+> · 日期：2026-09-01（多场 batch 补充）
+> alpha 全管线 **~226s/场**（de_dust2 单场）；duel 序列仅对 detected engagement
+> windows 提取（spec §113 性能约束）。
+
+---
+
+## 0. 多场验证（spec §77/§104，6 场全量）
+
+| 指标 | 单场（de_dust2 18r） | **6 场全量（128 局）** |
+| --- | --- | --- |
+| DecisionEpisodes | 542 | **3,679** |
+| family | CONTACT 319 / ADV 168 / OBJ 55 | CONTACT 2250 / ADV 1125 / OBJ 304（跨图比例稳定 ~61/31/8%） |
+| strategic eval | GOOD 224 / Q 170 / R 86 / POOR 60 | GOOD 1671 / Q 904 / R 685 / POOR 419 |
+| actionability | HIGHLY 55 / ACT 148 | HIGHLY 352 / ACT 966 / WEAK 2284 / NOT 77 |
+| engagement methods | DRY 89 / TEAM_FLASH 10 / JIGGLE 10 | **DRY 639 / DISENGAGE 464 / JIGGLE 72 / NORMAL 71 / TEAM_FLASH 58** |
+| execution primitives | PREAIM 333 / MOVING 256 / FIRE 220 / IRREG 106 | **PREAIM 2509 / MOVING 1837 / IRREG 835 / FIRE 237** |
+| sufficiency | MEDIUM 449 / LOW 51 | **MEDIUM 3364 / LOW 315**（无 HIGH，几何缺失诚实降级） |
+
+**多场 batch 验证的额外价值**：发现并修复了 3 类单场 demo 未暴露的兼容性 bug
+（demoparser 事件返回 list / NaN steamid / 数值 place），使管线对任意 demo 健壮：
+- `df_to_records` 容忍 list 输入（bomb_defused 空事件）
+- `normalize_steamids` NaN→None（世界击杀）
+- kills `user_steamid` None 防护（decision/episode/rootcause/patterns）
+- `zone_for` 容忍非字符串 place
+
+**spec §102-G 复核**：多场后 OVER_REPEEK pattern n=1257 但 violation_rate=0.188
+仍 < 0.30 门槛 → 不生成 TrainingTarget（诚实：该玩家群体实际过度 re-peek 率低；
+门控保守正确，不为凑目标而降门槛）。
 
 ---
 
@@ -102,7 +128,7 @@ CONTACT_RESPONSE · JIGGLE
 4. **utility inventory 为回合初估计**（1 flash + 1 smoke 假设）：消费扣除来自 detonate 事件，未持有真实 buy 数据。
 5. **execution 样本偏 POOR**（246）：可能受「移动即 MOVING_SHOT」宽松阈值影响；需人工校准。
 6. **几何仍未接入**：LocalExposure 的 cover/escape_route 为 None；sufficiency 因此大面积 MEDIUM（awpy 接入后预期上升）。
-7. **多场验证受限**：本机 `SampleDemo/` 目录（含 3 场 de_mirage 等 5 场真实 demo）在清理临时文件时被误删且不可恢复（回收站为空）；当前报告基于唯一可用场次（de_dust2 18 局）。分布结论需未来多场 batch 验证（spec §77/§104）。已将该目录加入 `.gitignore` 防再误删。
+7. **多场已补**：6 场（3 de_dust2 + 3 de_mirage）全量 batch 验证完成（spec §77），跨图分布稳定；此前误删的 `SampleDemo/` 由用户重新拷入并已加入 `.gitignore` 防再误删。
 
 ## 11. Success Criteria 对照（spec §120）
 

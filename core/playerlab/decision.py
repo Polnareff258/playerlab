@@ -56,7 +56,10 @@ def detect_for_player(demo: IngestedDemo, steamid: int, cfg: Config,
         else:
             episodes.append([{"t": t, "kind": kind, "other": other, "d": d}])
 
-    death_ticks = {int(k["user_steamid"]): int(k["tick"]) for k in demo.events["kills"]}
+    death_ticks = {}
+    for k in demo.events["kills"]:
+        if k.get("user_steamid") is not None:
+            death_ticks[int(k["user_steamid"])] = int(k["tick"])
     dps = []
     for ep in episodes:
         tc0 = ep[0]["t"]
@@ -313,7 +316,10 @@ def build_state(demo: IngestedDemo, dp: dict, cfg: Config, idx: dict) -> dict:
 def build_outcome(demo: IngestedDemo, dp: dict, cfg: Config) -> dict:
     """survival@W / duel result / round win for a DP (fixed windows)."""
     steamid = dp["steamid"]
-    death_ticks = {int(k["user_steamid"]): int(k["tick"]) for k in demo.events["kills"]}
+    death_ticks = {}
+    for k in demo.events["kills"]:
+        if k.get("user_steamid") is not None:
+            death_ticks[int(k["user_steamid"])] = int(k["tick"])
     death_tick = death_ticks.get(steamid)
     W = cfg.outcome_window_ticks
     survival = 1

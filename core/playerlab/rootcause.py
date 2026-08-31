@@ -19,8 +19,12 @@ def build_root_causes(demo: IngestedDemo, cfg: Config, db: DB,
     players = {p["steamid"] for p in demo.players}
     metrics = db.get_execution_metrics(demo.demo_id)
     dps = db.get_dps(demo.demo_id)
-    death_t = {int(k["tick"]): int(k["user_steamid"]) for k in demo.events["kills"]
-               if int(k["user_steamid"]) in players}
+    death_t = {}
+    for k in demo.events["kills"]:
+        sid = k.get("user_steamid")
+        if sid is None or int(sid) not in players:
+            continue
+        death_t[int(k["tick"])] = int(sid)
     adv_by_player_tick = {(s["steamid"], s["tick"]): s for s in advantage_samples}
 
     out = []

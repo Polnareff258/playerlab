@@ -25,8 +25,11 @@ DUST2_ZONES = {
 
 
 def zone_for(map_name: str, place: str) -> str:
-    """Map a place name to a coarse zone. Unknown places keep their raw name."""
-    p = (place or "").strip()
+    """Map a place name to a coarse zone. Unknown places keep their raw name.
+    Non-string places (NaN / numeric garbage in some demos) -> 'other'."""
+    if not isinstance(place, str):
+        return "other"
+    p = place.strip()
     if not p:
         return "other"
     if map_name == "de_dust2":

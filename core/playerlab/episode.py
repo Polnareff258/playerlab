@@ -55,7 +55,10 @@ def detect_opportunities(demo: IngestedDemo, cfg: Config, idx: dict,
     """Deterministic DecisionOpportunity detection (spec §6-§7, §59)."""
     opps = []
     teams = {p["steamid"]: p["team_number"] for p in demo.players}
-    death_tick = {int(k["user_steamid"]): int(k["tick"]) for k in demo.events["kills"]}
+    death_tick = {}
+    for k in demo.events["kills"]:
+        if k.get("user_steamid") is not None:
+            death_tick[int(k["user_steamid"])] = int(k["tick"])
 
     # ---- per player, per round ----
     for p in demo.players:
