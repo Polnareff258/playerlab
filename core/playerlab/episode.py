@@ -28,6 +28,7 @@ from .state import build_tick_index, pos_at, build_ground_truth
 from .context import build_temporal_context
 from .intent import detect_commitment, detect_role, classify_intent
 from .feasibility import action_feasibility
+from .engagement import build_engagement_context
 from .macro import compute_macro_context
 from .tradeability import compute_tradeability, NULL_GEOMETRY
 from .state import KnownStateBuilder
@@ -276,6 +277,15 @@ def build_episode(demo, cfg, db, idx, known_builder, opp: dict,
     observed = _observed_action(demo, cfg, tc, idx, sid, tick, family,
                                 dp_lookup=dp_lookup)
 
+    # V1.3.1: engagement + duel layers (spec §4-§5, §9-§60) — only when this
+    # episode is fight-relevant and a duel window exists around the anchor.
+    engagement_ctx = None
+    duel = None
+    if family in ("CONTACT_RESPONSE", "ADVANTAGE_PRESERVATION"):
+        duel = _find_duel(demo, cfg, idx, known_builder, sid, tick)
+        engagement_ctx = build_engagement_context(
+            demo, cfg, tc, known, duel=duel, observed_action=observed)
+
     episode_id = f"{demo.demo_id}-{family}-{sid}-{tick}"
     return {
         "id": episode_id,
@@ -297,15 +307,50 @@ def build_episode(demo, cfg, db, idx, known_builder, opp: dict,
         "state_value_before": None, "state_value_after": None,
         "decision_evaluation": "INSUFFICIENT_EVIDENCE",
         "actionability": "INSUFFICIENT_EVIDENCE",
+        "decision_domain": ("OBJECTIVE" if family == "OBJECTIVE_COMMITMENT"
+                            else "ENGAGEMENT" if engagement_ctx else "STRATEGIC_LOCAL"),
+        "engagement_id": None,
+        "engagement_context": engagement_ctx,
+        "duel_state_sequence": (duel or {}).get("sequence"),
+        "weapon_matchup": (engagement_ctx or {}).get("weapon_matchup"),
+        "information_advantage": (engagement_ctx or {}).get("information_advantage"),
+        "duel_phase": (duel or {}).get("phase"),
         "confidence": round(0.4 + 0.3 * opp["confidence"], 3),
-        "extractor_version": "v1.3-1",
-        "context_version": "v1.2.1",
-        "rule_version": "v1.3-1",
+        "extractor_version": "v1.3.1-1",
+        "context_version": "v1.3-1",
+        "rule_version": "v1.3.1-1",
         "model_provider_version": "null",
         "geometry_version": "null",
         "computed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "_known": known, "_tc": tc, "_candidates": candidates,
+        "_engagement": engagement_ctx, "_duel": duel,
     }
+
+
+def _find_duel(demo, cfg, idx, known_builder, sid, tick) -> dict | None:
+    """Extract the duel sequence around the anchor tick (spec §32-§35).
+    Window-local only; bounded; no full-match per-tick cost (spec §113)."""
+    from .duel import detect_engagement_windows, extract_duel_state_sequence
+    contacts = [d["tick"] for d in demo.events["damages"]
+                if d["user_steamid"] == sid or d["attacker_steamid"] == sid]
+    if not contacts:
+        return None
+    windows = detect_engagement_windows(demo, cfg, idx, sid, contacts)
+    win = next((w for w in windows if w["start"] <= tick <= w["end"]), None)
+    if not win:
+        return None
+    # duel opponent: the other party in the contact window
+    opponent = None
+    for d in demo.events["damages"]:
+        if win["start"] <= d["tick"] <= win["end"]:
+            if d["user_steamid"] == sid:
+                opponent = d["attacker_steamid"]
+                break
+            if d["attacker_steamid"] == sid:
+                opponent = d["user_steamid"]
+                break
+    return extract_duel_state_sequence(demo, cfg, idx, sid, win,
+                                       enemy_steamid=opponent)
 
 
 def _immediate_result(demo, idx, sid, tick) -> dict:
@@ -335,9 +380,6 @@ def run_episodes(demo: IngestedDemo, cfg: Config, db: DB,
     known_builder = KnownStateBuilder(demo, cfg, idx)
     db.delete_decision_episodes(demo.demo_id)
     dp_lookup = _precompute_dp_lookup(demo, cfg, idx)
-    dps_by_player = {}
-    for dp in db.get_dps(demo.demo_id):
-        dps_by_player.setdefault(dp["steamid"], []).append(dp)
     opps = detect_opportunities(demo, cfg, idx, known_builder)
     episodes = []
     for opp in opps:
@@ -346,29 +388,54 @@ def run_episodes(demo: IngestedDemo, cfg: Config, db: DB,
                                dp_lookup=dp_lookup)
         except Exception:  # noqa: BLE001
             continue
-        # attach a retrieval state for evidence (spec §37) — reuse the
-        # player-known state already built (no re-parse, no re-calibration)
-        ep["_state"] = {
-            "dp_id": f"{ep['id']}-state", "match_id": ep["match_id"],
-            "round": ep["round"], "decision_tick": ep["anchor_tick"],
-            "map": demo.header.get("map_name"),
-            "side": demo.side_at_round(ep["player_id"], ep["round"]),
-            "zone": (ep.get("local_context") or {}).get("zone") or "?",
-            "observed_action": ep["observed_action"],
-            "features": {}, "labels": {"map": demo.header.get("map_name"),
-                                       "side": demo.side_at_round(ep["player_id"], ep["round"]),
-                                       "zone": "?", "action": ep["observed_action"]},
-            "known_state": ep["player_known_state"],
-            "public_info": {}, "ground_truth": {},
-        }
+        # real retrieval features for historical/personal evidence (spec §62)
+        ep["_state"] = _retrieval_state(demo, cfg, ep)
         # Phase E: evidence + Phase F/G: evaluation + actionability
-        from .evidence import build_evidence
+        from .evidence import build_evidence, evidence_sufficiency
         from .evaluate import evaluate_decision, actionability
         cands = ep.get("_candidates", [])
         summary, evidence_rows = build_evidence(
             demo, cfg, db, ep, cands, model_provider=model_provider)
-        ep["decision_evaluation"] = evaluate_decision(ep, cfg, summary)
+        ep["evidence_sufficiency"] = evidence_sufficiency(ep)
+        ep["decision_evaluation"] = evaluate_decision(ep, cfg, summary,
+                                                      sufficiency=ep["evidence_sufficiency"])
         ep["actionability"] = actionability(ep, cfg)
+        # V1.3.1 three-level evaluation (spec §73/§102)
+        eng = ep.get("_engagement")
+        duel = ep.get("_duel")
+        from .evaluate import engagement_evaluation, execution_evaluation
+        from .duel import execution_primitives, movement_effect
+        from .weapons import engagement_class, range_bucket, name_from_def
+        ep["strategic_evaluation"] = ep["decision_evaluation"]
+        # CS-NET state-value evidence (spec §65): before/after/delta. The
+        # provider consumes a canonical state frame; failures degrade to None
+        # and never affect the evaluation (spec §66).
+        if model_provider is not None:
+            try:
+                ev = model_provider.predict_win_probability(
+                    ep["_state"], match_id=ep["match_id"], round=ep["round"],
+                    tick=ep["anchor_tick"])
+                if ev.prediction is not None:
+                    ep["state_value_before"] = round(float(ev.prediction), 4)
+            except Exception:  # noqa: BLE001
+                pass
+        if eng:
+            ep["engagement_evaluation"] = engagement_evaluation(ep, cfg, eng)
+            ep["engagement_method"] = eng.get("engagement_method")
+        if duel:
+            matchup = (eng or {}).get("weapon_matchup") or {}
+            self_name = matchup.get("self_weapon", "unknown")
+            rb = matchup.get("range_bucket", "UNKNOWN")
+            ep["execution_primitives"] = execution_primitives(demo, cfg, duel, ep.get("_tc"))
+            ep["movement_effect"] = movement_effect(
+                demo, cfg, duel, ep.get("_tc"),
+                engagement_class(self_name), rb)
+            ep["execution_evaluation"] = execution_evaluation(ep, cfg, duel, eng)
+            ep["duel_phase"] = duel.get("phase")
+        # engagement_id: group the CONTACT_RESPONSE episode as the anchor of
+        # one duel; related ADVANTAGE/OBJECTIVE episodes link to it (spec §115)
+        if ep["family"] == "CONTACT_RESPONSE":
+            ep["engagement_id"] = f"{demo.demo_id}-eng-{ep['player_id']}-{ep['anchor_tick']}"
         # persist episode + candidates + evidence
         for rank, c in enumerate(cands, start=1):
             db.upsert_decision_candidate({
@@ -385,6 +452,22 @@ def run_episodes(demo: IngestedDemo, cfg: Config, db: DB,
             db.upsert_decision_evidence(ev)
         db.upsert_decision_episode(ep)
         episodes.append(ep)
+    # link non-contact episodes to the nearest engagement of the same player
+    # (spec §115-§116: one duel = one card, not three duplicate cards)
+    contact_by_player = {}
+    for ep in episodes:
+        if ep.get("engagement_id"):
+            contact_by_player.setdefault(ep["player_id"], []).append(ep)
+    for ep in episodes:
+        if ep.get("engagement_id") or ep["family"] == "OBJECTIVE_COMMITMENT":
+            continue
+        near = contact_by_player.get(ep["player_id"], [])
+        if not near:
+            continue
+        best = min(near, key=lambda c: abs(c["anchor_tick"] - ep["anchor_tick"]))
+        if abs(best["anchor_tick"] - ep["anchor_tick"]) <= 512:
+            ep["engagement_id"] = best["engagement_id"]
+            db.upsert_decision_episode(ep)
     return {"opportunities": len(opps), "episodes": len(episodes),
             "families": _family_dist(episodes)}
 
@@ -394,6 +477,29 @@ def _family_dist(episodes: list[dict]) -> dict:
     return dict(Counter(e["family"] for e in episodes))
 
 
-def _family_dist(episodes: list[dict]) -> dict:
-    from collections import Counter
-    return dict(Counter(e["family"] for e in episodes))
+def _retrieval_state(demo, cfg, ep: dict) -> dict:
+    """Real retrieval features for the evidence engine (spec §62)."""
+    from .features import build_features
+    known = ep.get("player_known_state") or {}
+    macro = ep.get("macro_context") or {}
+    local = ep.get("local_context") or {}
+    myrec_place = (local.get("zone") or "unknown")
+    side = demo.side_at_round(ep["player_id"], ep["round"])
+    recent_contact = bool((local.get("recent_contact_ticks") or 0) > 0)
+    team_alive = macro.get("team_structure", {}).get("team_alive")
+    enemy_alive = macro.get("team_structure", {}).get("enemy_alive")
+    features, labels = build_features(
+        known, {"time_remaining_s": macro.get("round_time"),
+                "bomb": {"planted_site": (macro.get("bomb_state") or {}).get("site")}},
+        cfg, demo.header.get("map_name"), side, myrec_place,
+        ep.get("observed_action", "HOLD"), recent_contact,
+        known.get("teammate_near", 0), known.get("teammate_mid", 0),
+        team_alive or 5, enemy_alive or 5)
+    return {
+        "dp_id": f"{ep['id']}-state", "match_id": ep["match_id"],
+        "round": ep["round"], "decision_tick": ep["anchor_tick"],
+        "map": demo.header.get("map_name"), "side": side,
+        "zone": myrec_place, "observed_action": ep.get("observed_action"),
+        "features": features, "labels": labels,
+        "known_state": known, "public_info": {}, "ground_truth": {},
+    }

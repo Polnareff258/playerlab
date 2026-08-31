@@ -247,8 +247,18 @@ def main(argv=None):
             print(json.dumps({
                 "id": ep["id"], "family": ep["family"], "round": ep["round"],
                 "tick": ep["anchor_tick"], "observed": ep["observed_action"],
-                "evaluation": ep["decision_evaluation"],
+                "decision_domain": ep.get("decision_domain"),
+                "strategic": ep.get("strategic_evaluation"),
+                "engagement": ep.get("engagement_evaluation"),
+                "execution": ep.get("execution_evaluation"),
+                "evidence_sufficiency": ep.get("evidence_sufficiency"),
                 "actionability": ep["actionability"],
+                "engagement_method": ep.get("engagement_method"),
+                "weapon_matchup": ep.get("weapon_matchup"),
+                "information_advantage": ep.get("information_advantage"),
+                "execution_primitives": ep.get("execution_primitives"),
+                "movement_effect": ep.get("movement_effect"),
+                "state_value_before": ep.get("state_value_before"),
                 "macro": ep["macro_context"], "intent": ep["intent"],
                 "commitment": ep["commitment_state"],
                 "candidates": ep.get("candidates", []),
@@ -272,6 +282,21 @@ def main(argv=None):
         print("evaluation:", dict(Counter(e["decision_evaluation"] for e in eps)))
         print("actionability:", dict(Counter(e["actionability"] for e in eps)))
         print("observed:", dict(Counter(e["observed_action"] for e in eps)))
+        print("strategic:", dict(Counter(e.get("strategic_evaluation") for e in eps)))
+        print("engagement:", dict(Counter(e.get("engagement_evaluation") for e in eps)))
+        print("execution:", dict(Counter(e.get("execution_evaluation") for e in eps)))
+        print("sufficiency:", dict(Counter(e.get("evidence_sufficiency") for e in eps)))
+        methods = Counter()
+        for e in eps:
+            m = (e.get("engagement_method") or {}).get("method")
+            if m:
+                methods[m] += 1
+        print("engagement methods:", dict(methods))
+        prims = Counter()
+        for e in eps:
+            for p in (e.get("execution_primitives") or []):
+                prims[p] += 1
+        print("execution primitives:", dict(prims))
     elif args.cmd == "decision-preference":
         from .db import DB
         from .episode import _candidate_actions  # noqa: F401 (schema reuse)

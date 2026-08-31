@@ -22,12 +22,17 @@ EVALUATIONS = ("GOOD", "REASONABLE", "QUESTIONABLE", "POOR", "INSUFFICIENT_EVIDE
 
 
 def evaluate_decision(episode: dict, cfg: Config,
-                      candidate_evidence: dict | None = None) -> str:
+                      candidate_evidence: dict | None = None,
+                      sufficiency: str | None = None) -> str:
     """Deterministic evaluation over context + feasible alternatives + evidence.
 
     candidate_evidence: {action: {"risk": LOW/MED/HIGH, "support": LOW/MED/HIGH,
     "value": LOW/MED/HIGH}} — populated by evidence.py (Phase E).
+    sufficiency: EvidenceSufficiency (spec §70). INSUFFICIENT -> the
+    evaluation must be INSUFFICIENT_EVIDENCE (spec §71) — no forced GOOD/POOR.
     """
+    if sufficiency == "INSUFFICIENT":
+        return "INSUFFICIENT_EVIDENCE"
     macro = episode.get("macro_context") or {}
     local = episode.get("local_context") or {}
     fe = episode.get("feasibility") or {}
@@ -181,3 +186,64 @@ def _evidence_basics_present(episode: dict) -> bool:
     ks = episode.get("player_known_state") or {}
     macro = episode.get("macro_context") or {}
     return bool(ks and macro.get("advantage_state"))
+
+
+# ---------------------------------------------------------------- V1.3.1 three levels
+def engagement_evaluation(episode: dict, cfg: Config,
+                          engagement: dict | None = None) -> str:
+    """EngagementEvaluation (spec §7/§73/§108): how the fight was taken.
+    A dry peek at a known long-range AWP without utility is QUESTIONABLE even
+    when the strategic decision to fight was reasonable."""
+    eng = engagement or episode.get("_engagement") or {}
+    method = (eng.get("engagement_method") or {}).get("method", "HOLD")
+    matchup = eng.get("weapon_matchup") or {}
+    info_adv = eng.get("information_advantage", "UNKNOWN")
+    enemy_cls = matchup.get("enemy_weapon_class", "UNKNOWN")
+    range_b = matchup.get("range_bucket", "UNKNOWN")
+    score = 0.0
+
+    if method == "DRY_PEEK":
+        if enemy_cls == "AWP" and range_b == "long":
+            score -= 2.0   # known AWP + long angle + no utility (spec §78)
+        elif info_adv in ("ENEMY", "MUTUAL"):
+            score -= 1.0
+        else:
+            score -= 0.5
+    elif method in ("FLASH_PEEK", "TEAM_FLASH_PEEK"):
+        score += 1.0
+    elif method == "WIDE_SWING":
+        if range_b == "long" and enemy_cls in ("AWP", "RIFLE"):
+            score -= 1.0   # wide swing exposes at long range
+        elif range_b == "close":
+            score += 0.5
+    elif method == "JIGGLE":
+        score += 0.5
+    elif method == "HOLD":
+        score += 0.0
+    elif method == "DISENGAGE":
+        score += 0.5
+
+    if score >= 1.0:
+        return "GOOD"
+    if score >= 0.0:
+        return "REASONABLE"
+    if score >= -1.0:
+        return "QUESTIONABLE"
+    return "POOR"
+
+
+def execution_evaluation(episode: dict, cfg: Config,
+                         duel: dict | None = None,
+                         engagement: dict | None = None) -> str:
+    """ExecutionEvaluation (spec §58-§59): quality of the actual duel
+    execution — aim readiness, movement, shot timing. Independent of both
+    strategic and engagement quality (spec §7/§108)."""
+    if not duel:
+        return "INSUFFICIENT_EVIDENCE"
+    eng = engagement or episode.get("_engagement") or {}
+    matchup = eng.get("weapon_matchup") or {}
+    self_cls = matchup.get("self_weapon_class", "UNKNOWN")
+    range_b = matchup.get("range_bucket", "UNKNOWN")
+    from .duel import duel_evaluation, movement_effect
+    me = movement_effect(None, cfg, duel, None, self_cls, range_b)
+    return duel_evaluation(None, cfg, duel, None, {}, me, range_b, self_cls)

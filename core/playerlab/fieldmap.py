@@ -32,7 +32,18 @@ FIELD_MAP = {
     "is_alive": "is_alive",
     "ping": "ping",
     "team_num": "CCSPlayerController.m_iTeamNum",
+    # V1.3.1 duel/utility grounding (verified on real CS2 SourceTV demo):
+    "ammo_clip": "Weapon.m_iClip1",                     # current magazine
+    "flash_duration": "CCSPlayerPawn.m_flFlashDuration",  # blind state (>0 = flashed)
+    "zoom_level": "CCSPlayerPawn.m_iZoomLevel",          # 0 = unscoped, 1/2 = scoped
 }
+
+# buttons bitmask flags (CS2 IN_* constants; verified in real demo)
+BUTTON_DUCK = 4       # IN_DUCK
+BUTTON_ATTACK = 1     # IN_ATTACK
+BUTTON_USE = 512      # IN_USE (plant/defuse hold)
+BUTTON_MOVELEFT = 1024
+BUTTON_MOVERIGHT = 2048
 
 CANONICAL_FIELDS = list(FIELD_MAP.keys())
 

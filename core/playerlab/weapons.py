@@ -65,3 +65,36 @@ def weapon_class(name: str) -> str:
     if name in ("c4",):
         return "c4"
     return "unknown"
+
+
+# V1.3.1 engagement weapon classes (spec §13): CS-NET-style coarse buckets
+ENGAGEMENT_CLASS = {
+    "awp": "AWP",
+    "ssg08": "SNIPER_OTHER", "scar20": "SNIPER_OTHER", "g3sg1": "SNIPER_OTHER",
+    "ak47": "RIFLE", "m4a4": "RIFLE", "m4a1_silencer": "RIFLE", "aug": "RIFLE",
+    "sg556": "RIFLE", "galilar": "RIFLE", "famas": "RIFLE",
+    "mp9": "SMG", "mp7": "SMG", "mp5sd": "SMG", "mp5": "SMG", "mac10": "SMG",
+    "p90": "SMG", "ump45": "SMG", "bizon": "SMG",
+    "nova": "SHOTGUN", "xm1014": "SHOTGUN", "mag7": "SHOTGUN", "sawedoff": "SHOTGUN",
+    "deagle": "PISTOL", "elite": "PISTOL", "fiveseven": "PISTOL", "glock": "PISTOL",
+    "tec9": "PISTOL", "p2000": "PISTOL", "p250": "PISTOL", "usp_silencer": "PISTOL",
+    "cz75a": "PISTOL", "revolver": "PISTOL", "taser": "PISTOL",
+    "m249": "RIFLE", "negev": "RIFLE",
+}
+UTILITY_DEFS = {"flashbang": 43, "hegrenade": 44, "smokegrenade": 45,
+                "molotov": 46, "incgrenade": 48}
+
+
+def engagement_class(name: str) -> str:
+    return ENGAGEMENT_CLASS.get(name, "UNKNOWN")
+
+
+def range_bucket(distance_units: float) -> str:
+    """Coarse range buckets for aim/movement context (spec §40)."""
+    if distance_units is None:
+        return "UNKNOWN"
+    if distance_units <= 800.0:
+        return "close"
+    if distance_units <= 2000.0:
+        return "medium"
+    return "long"

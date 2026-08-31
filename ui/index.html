@@ -60,8 +60,8 @@
 </head>
 <body>
 <header>
-  <h1>PlayerLab <span>V1.3</span></h1>
-  <span>Decision Episode + Local Alternatives</span>
+  <h1>PlayerLab <span>V1.3.1</span></h1>
+  <span>Engagement + Duel Execution</span>
   <nav>
     <button id="tab-focus" class="on" onclick="goto('focus')">Focus</button>
     <button id="tab-decisions" onclick="goto('decisions')">Decisions</button>
@@ -286,16 +286,30 @@ async function renderDecisions(el){
     const why = m.need_for_information && m.advantage_state
       ? `You were <b>${esc(m.advantage_state.replace("_"," "))}</b> · info need <b>${esc(m.need_for_information)}</b> · risk tolerance <b>${esc(m.risk_tolerance||"—")}</b>.`
       : "context unknown";
+    const em = d.engagement_method || {};
+    const wm = d.weapon_matchup || {};
+    const me = d.movement_effect || {};
+    const prims = (d.execution_primitives||[]).map(esc).join(", ") || "—";
     const cands = (d.candidates||[]).filter(c=>!["UNAVAILABLE","TEMPORARILY_UNAVAILABLE"].includes(c.feasibility));
+    const engLine = (d.engagement_evaluation && em.method)
+      ? `<div class="why"><b>HOW YOU FOUGHT</b>: ${esc(em.method)} · engagement <b>${esc(d.engagement_evaluation)}</b>` +
+        (wm.self_weapon_class ? ` · ${esc(wm.self_weapon_class)} vs ${esc(wm.enemy_weapon_class||"unknown")} @ ${esc(wm.range_bucket||"—")}` : "") +
+        (d.information_advantage ? ` · info advantage <b>${esc(d.information_advantage)}</b>` : "") + `</div>` : "";
+    const execLine = (d.execution_evaluation && d.execution_primitives)
+      ? `<div class="why"><b>HOW YOU EXECUTED</b>: <b>${esc(d.execution_evaluation)}</b>` +
+        ` · issues: ${prims}` +
+        (me.self_accuracy_cost ? ` · self-accuracy <b>${esc(me.self_accuracy_cost)}</b> · opponent tracking <b>${esc(me.estimated_opponent_tracking_difficulty||"—")}</b>` : "") + `</div>` : "";
     html += `<div class="card">
       <div class="row">
         <span class="chip ${d.actionability==="NOT_ACTIONABLE"?"":d.actionability==="HIGHLY_ACTIONABLE"?"ok":"MEDIUM"}">${esc(d.actionability)}</span>
         <span class="chip ${d.decision_evaluation==="POOR"?"MEDIUM":d.decision_evaluation==="GOOD"?"ok":""}">${esc(d.decision_evaluation)}</span>
-        <b>${esc(d.family.replace("_"," "))}</b>
+        <span class="chip">${esc(d.decision_domain||"")}</span>
+        <b>${esc((d.family||"").replace("_"," "))}</b>
         <span class="mono muted">r${d.round} t${d.anchor_tick} p${d.player_id}</span>
       </div>
-      <div class="why"><b>OBSERVED</b>: ${esc(d.observed_action)} · commitment ${esc(d.commitment_state)} · intent ${esc(d.intent)}</div>
-      <div class="why"><b>WHY IT MATTERS</b>: ${why}</div>
+      <div class="why"><b>OBSERVED</b>: ${esc(d.observed_action)} · commitment ${esc(d.commitment_state)} · intent ${esc(d.intent)} · sufficiency ${esc(d.evidence_sufficiency||"—")}</div>
+      <div class="why"><b>WHY FIGHT</b>: ${why} <span class="muted">(strategic ${esc(d.strategic_evaluation||"—")})</span></div>
+      ${engLine}${execLine}
       <div class="row" style="margin-top:6px">
         <span class="muted" style="font-size:12px">Alternatives:</span>
         ${cands.map(c=>`<span class="chip">${esc(c.action)} <span class="muted">${esc(c.feasibility)}</span></span>`).join("")}

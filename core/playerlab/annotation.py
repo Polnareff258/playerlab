@@ -28,7 +28,9 @@ REASON_CODES = ["TEAM_CALL", "COORDINATED_PEEK", "MISSING_AUDIO", "MISSING_VISUA
 
 ANNOTATION_TYPES = ("behavior_detection", "decision_quality", "root_cause",
                     "target_feedback", "intent", "situational_role",
-                    "commitment_state", "action_feasibility", "responsibility")
+                    "commitment_state", "action_feasibility", "responsibility",
+                    # V1.3.1 (spec §83)
+                    "engagement_method", "execution_issue", "movement_effect")
 
 INTENT_LABELS = ("ROTATE", "SOFT_ROTATE", "REPOSITION", "GATHER_INFO", "HOLD",
                  "CONTEST", "SUPPORT", "TRADE", "PLANT", "DEFUSE", "OTHER", "UNSURE")
@@ -170,6 +172,14 @@ def build_review_queue(db: DB, cfg: Config, match_id: str,
         if ep["intent"] == "AMBIGUOUS":
             prio += 0.1
             reasons.append("ambiguous intent")
+        # V1.3.1: engagement/execution issues boost review priority (spec §83)
+        em = (ep.get("engagement_method") or {})
+        if em.get("method") in ("DRY_PEEK", "WIDE_SWING"):
+            prio += 0.2
+            reasons.append(f"engagement method={em.get('method')}")
+        if ep.get("execution_primitives"):
+            prio += 0.15
+            reasons.append(f"execution issues={','.join(ep['execution_primitives'][:2])}")
         if prio < 0.35:
             continue
         items.append({

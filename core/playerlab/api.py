@@ -150,6 +150,10 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                                    family=q_family, limit=200)
                     for e in eps:
                         e["candidates"] = db.get_decision_candidates(e["id"])
+                        # strip heavy duel sequence for the list view (keep
+                        # summary); the detail endpoint returns it fully
+                        seq = e.pop("duel_state_sequence", None)
+                        e["duel_summary"] = {"n_states": len(seq)} if seq else None
                     _json(self, {"decisions": eps})
                 elif path.startswith("/api/decisions/"):
                     ep_id = path[len("/api/decisions/"):]

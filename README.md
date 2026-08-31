@@ -1,4 +1,4 @@
-# PlayerLab V1.3 — Decision Episode & Local Alternatives
+# PlayerLab V1.3.1 — Alternative Evidence + Engagement & Duel Execution
 
 本地优先的 CS2 Demo 分析项目。核心目标：
 
@@ -15,9 +15,13 @@ V1.2.1 升级：**Context Grounding**（KnownState 序列 + InformationStrength/
 + Tradeability + 保守责任归因 + Review Quota）+ **Optional Model Intelligence**
 （GameModelProvider / Null / CSNetProvider，CS-NET 作为可选后端）。
 
-V1.3 升级：**DecisionEpisode & Local Alternatives** —— 核心问题从「这一波是谁的锅」转向
-「在当时的信息、职责、局势和可行操作条件下，这个局部选择是否合理」。Macro 解释 Micro，
-Alternatives 先于批评，Feasibility 先于推荐，Actionability 先于训练（spec §1/§104）。
+V1.3 升级：**DecisionEpisode & Local Alternatives** —— 「该不该打」（Strategic），
+Macro 解释 Micro，Alternatives 先于批评，Feasibility 先于推荐。
+
+V1.3.1 升级：**Engagement & Duel Execution Foundation** —— 第一次形成完整分析链：
+「该不该打」（Strategic）→「应该怎么打」（Engagement Method）→「实际是怎么打出来的」
+（Duel Execution）→「这些动作造成了什么影响」（MovementEffect）。三层评价分离 +
+EvidenceSufficiency gate + 4 个 execution primitives + MovementEffect 双面描述。
 
 ## 与 DAK Studio 的关系
 
@@ -110,14 +114,14 @@ python3 -m playerlab.cli model-intelligence --provider csnet
 
 在 V1.2.1 之上增加**局部选择分析层**：DecisionEpisode（核心分析单位）、MacroContext（5v4 优势 / 信息需求 / 风险容忍度）、CandidateActions（9 个 MVP 动作 + Feasibility 先行）、DecisionEvaluation（GOOD..POOR，outcome 不参与）、Actionability（5 级，TrainingTarget gate）、Alternative Evidence（rule / historical / personal / CS-NET）、Episode Pattern → TrainingTarget。详见 [docs/DECISION_EPISODE_RESULTS.md](docs/DECISION_EPISODE_RESULTS.md)。
 
+### V1.3.1 — Engagement & Duel Execution Foundation（已实现）
+
+在 V1.3 之上增加**打法与执行层**：EngagementContext（WeaponMatchup / InformationAdvantage / FightPreparation）、EngagementMethod（DRY_PEEK / WIDE_SWING / FLASH_PEEK / TEAM_FLASH_PEEK / JIGGLE / NORMAL_PEEK 等，self/team utility 区分）、DuelState 序列（仅 detected engagement windows，性能可控）、4 个 Execution Primitives（FIRE_BEFORE_AIM_READY / PREAIM_ERROR / MOVING_SHOT / IRREGULAR_DUEL_MOVEMENT）、MovementEffect（self accuracy cost vs estimated opponent tracking difficulty，LOW/MED/HIGH 不伪造精度）、**三层评价分离**（strategic / engagement / execution，spec §7 示例可复现）+ EvidenceSufficiency gate（无几何时诚实降级 MEDIUM/LOW，不虚报 HIGH）。详见 [docs/ENGAGEMENT_DUEL_RESULTS.md](docs/ENGAGEMENT_DUEL_RESULTS.md)。
+
 ```powershell
-python3 -m playerlab.cli decisions --match <id> --family CONTACT_RESPONSE   # DecisionEpisode 列表
-python3 -m playerlab.cli decision-show <episode_id>                         # 详情（context/candidates/evidence）
-python3 -m playerlab.cli decision-review                                    # 待审 DecisionEpisode
-python3 -m playerlab.cli decision-stats                                     # family/eval/actionability 分布
-python3 -m playerlab.cli decision-preference <episode_id> A                 # pairwise preference
-# API: /api/decisions · /api/decisions/{id} · /api/decisions/{id}/alternatives · POST /api/decisions/{id}/preference
-# UI: Decisions 标签页（KEY DECISIONS：Observed / Alternatives / Why It Matters / Actionability）
+python3 -m playerlab.cli decision-stats      # 三层 eval + engagement methods + execution primitives 分布
+python3 -m playerlab.cli decision-show <episode_id>  # 完整卡片（strategic/engagement/execution/movement_effect）
+# UI Decisions 页：WHY FIGHT / HOW YOU FOUGHT / HOW YOU EXECUTED 单卡片（spec §117）
 ```
 
 ## 阶段状态

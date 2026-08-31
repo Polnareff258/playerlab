@@ -36,6 +36,7 @@ def build_evidence(demo, cfg, db, episode: dict, candidates: list[dict],
     adv = macro.get("advantage_state", "EVEN")
     need_info = macro.get("need_for_information", "NONE")
     risk_tol = macro.get("risk_tolerance", "MEDIUM")
+    sufficiency = evidence_sufficiency(episode)
 
     for c in candidates:
         action = c["action"]
@@ -155,10 +156,90 @@ def _row(episode, action, source, etype, supports, contradicts,
     }
 
 
+def evidence_sufficiency(episode: dict) -> str:
+    """EvidenceSufficiency (spec §68-§70): HIGH / MEDIUM / LOW / INSUFFICIENT.
+
+    Inputs (spec §69): known-state completeness, geometry availability,
+    utility inventory certainty, opponent info certainty, historical sample
+    count, model evidence, audio/team-call uncertainty.
+    """
+    known = episode.get("player_known_state") or {}
+    macro = episode.get("macro_context") or {}
+    local = episode.get("local_context") or {}
+    cands = episode.get("_candidates") or []
+    score = 0.0
+    reasons = []
+
+    # known-state completeness
+    n_known = known.get("n_known_enemies", 0)
+    if known.get("last_seen_enemies") and n_known >= 0:
+        score += 0.5
+    else:
+        reasons.append("no enemy information at all")
+    if known.get("bomb_known") is not None:
+        score += 0.3
+    else:
+        reasons.append("bomb state unknown")
+    if known.get("own", {}).get("weapon_def") is not None:
+        score += 0.4
+    else:
+        reasons.append("own weapon unknown")
+
+    # macro completeness
+    if macro.get("advantage_state") not in (None, "UNKNOWN"):
+        score += 0.5
+    if macro.get("need_for_information"):
+        score += 0.3
+
+    # geometry (spec §26-§28): LOS/nav is core local-decision evidence;
+    # its absence is a MAJOR downgrade (V1.3.1 core ships NULL_GEOMETRY)
+    geom = local.get("geometry") or {}
+    if geom.get("provider") not in (None, "null"):
+        score += 0.4
+    else:
+        score -= 0.6
+        reasons.append("no geometry provider (LOS/nav unknown)")
+
+    # utility inventory certainty (spec §29): round-start estimate is weak
+    util = known.get("utility_inventory") or {}
+    if util.get("flash_count") is not None:
+        score += 0.2
+    else:
+        score -= 0.2
+        reasons.append("utility inventory unknown")
+
+    # opponent info certainty: few known enemies is a real signal gap
+    if n_known >= 2:
+        score += 0.3
+    elif n_known == 1:
+        score += 0.15
+    else:
+        score -= 0.3
+        reasons.append("no enemy positions known")
+
+    # candidates / evidence presence
+    if cands:
+        score += 0.2
+
+    if score >= 2.2:
+        return "HIGH"
+    if score >= 1.5:
+        return "MEDIUM"
+    if score >= 0.8:
+        return "LOW"
+    return "INSUFFICIENT"
+
+
 def _historical(db, cfg, episode, action):
-    """Similar-state retrieval for one candidate action (spec §35-§37)."""
+    """Similar-state retrieval for one candidate action (spec §35-§37).
+
+    Uses the episode's own retrieval features (spec §62) — family, macro
+    context, zone, weapon class, hp bucket, known-enemy count, information
+    state, risk tolerance, need-for-information, commitment, role,
+    tradeability — built from the episode payload (no empty features).
+    """
     state = episode.get("_state") or {}
-    if not state:
+    if not state or not (state.get("features") or state.get("labels")):
         return None
     try:
         cands = retrieve(db, cfg, state, mode="same_action", k=20)
@@ -170,7 +251,7 @@ def _historical(db, cfg, episode, action):
     surv = sum(1 for c in cands
                if (db.get_outcome(c["dp_id"]) or {}).get("survival"))
     rate = surv / n
-    return {"n": n, "confidence": round(abs(rate - 0.5) + 0.4, 3),
+    return {"n": n, "confidence": round(min(0.9, abs(rate - 0.5) + 0.4), 3),
             "support": rate >= 0.5,
             "note": f"{action}: survival {rate:.2f} over {n} similar states"}
 

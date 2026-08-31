@@ -61,7 +61,11 @@ def run_alpha(demo: IngestedDemo, cfg: Config, db: DB) -> dict:
     from .episode import run_episodes
     from .episode_patterns import cluster_episodes
     from .training import generate_targets_from_episodes
-    ep_result = run_episodes(demo, cfg, db, model_provider=None)
+    from .model_provider import get_provider
+    model_provider = get_provider(cfg.model_provider,
+                                  models_dir=cfg.csnet_models_dir or None,
+                                  repo_dir=cfg.csnet_repo_dir or None)
+    ep_result = run_episodes(demo, cfg, db, model_provider=model_provider)
     episode_patterns = cluster_episodes(db, cfg)
     ep_targets = generate_targets_from_episodes(db, cfg, episode_patterns)
 

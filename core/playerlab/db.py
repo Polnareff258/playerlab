@@ -267,6 +267,30 @@ class DB:
         if current < 5:
             self.conn.executescript(V13_SCHEMA)
             self.conn.execute("UPDATE schema_version SET version=5")
+        # V1.3.1: additive columns on decision_episodes (evidence sufficiency,
+        # three-level evaluation, engagement linkage, duel context)
+        _v6_cols = [
+            ("decision_episodes", "evidence_sufficiency", "TEXT"),
+            ("decision_episodes", "strategic_evaluation", "TEXT"),
+            ("decision_episodes", "engagement_evaluation", "TEXT"),
+            ("decision_episodes", "execution_evaluation", "TEXT"),
+            ("decision_episodes", "decision_domain", "TEXT"),
+            ("decision_episodes", "engagement_id", "TEXT"),
+            ("decision_episodes", "engagement_context", "TEXT"),
+            ("decision_episodes", "engagement_method", "TEXT"),
+            ("decision_episodes", "movement_effect", "TEXT"),
+            ("decision_episodes", "execution_primitives", "TEXT"),
+            ("decision_episodes", "duel_state_sequence", "TEXT"),
+            ("decision_episodes", "weapon_matchup", "TEXT"),
+            ("decision_episodes", "information_advantage", "TEXT"),
+            ("decision_episodes", "duel_phase", "TEXT"),
+        ]
+        for table, col, typ in _v6_cols:
+            cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        if current < 6:
+            self.conn.execute("UPDATE schema_version SET version=6")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -737,16 +761,34 @@ class DB:
                 "immediate_result", "state_value_before", "state_value_after",
                 "decision_evaluation", "actionability", "confidence",
                 "extractor_version", "context_version", "rule_version",
-                "model_provider_version", "geometry_version", "computed_at")
+                "model_provider_version", "geometry_version", "computed_at",
+                "evidence_sufficiency", "strategic_evaluation",
+                "engagement_evaluation", "execution_evaluation",
+                "decision_domain", "engagement_id", "engagement_context",
+                "engagement_method", "movement_effect", "execution_primitives",
+                "duel_state_sequence", "weapon_matchup", "information_advantage",
+                "duel_phase")
 
     def upsert_decision_episode(self, e: dict):
         cols = self._DE_COLS
         params = dict(e)
         for k in ("temporal_context", "player_known_state", "macro_context",
-                  "local_context", "feasibility", "immediate_result"):
+                  "local_context", "feasibility", "immediate_result",
+                  "engagement_context", "engagement_method", "movement_effect",
+                  "execution_primitives", "duel_state_sequence", "weapon_matchup"):
             v = params.get(k)
             if isinstance(v, (dict, list)):
                 params[k] = jd(v)
+        for k in ("evidence_sufficiency", "strategic_evaluation",
+                  "engagement_evaluation", "execution_evaluation",
+                  "decision_domain", "engagement_id", "duel_phase"):
+            params.setdefault(k, None)
+        for k in ("engagement_context", "engagement_method", "movement_effect",
+                  "execution_primitives", "duel_state_sequence", "weapon_matchup",
+                  "information_advantage"):
+            if k not in params or params[k] is None:
+                params[k] = jd({}) if k not in ("execution_primitives",
+                                                 "duel_state_sequence") else jd([])
         self.conn.execute(
             f"INSERT OR REPLACE INTO decision_episodes ({','.join(cols)}) "
             f"VALUES ({','.join(':' + c for c in cols)})", params)
@@ -768,9 +810,14 @@ class DB:
         for r in self.conn.execute(q + f" ORDER BY anchor_tick LIMIT {limit}", args):
             d = dict(r)
             for k in ("temporal_context", "player_known_state", "macro_context",
-                      "local_context", "feasibility", "immediate_result"):
+                      "local_context", "feasibility", "immediate_result",
+                      "engagement_context", "engagement_method", "movement_effect",
+                      "execution_primitives", "duel_state_sequence", "weapon_matchup"):
                 if d.get(k):
                     d[k] = json.loads(d[k])
+            # normalize legacy rows: primitives must be a list
+            if isinstance(d.get("execution_primitives"), dict):
+                d["execution_primitives"] = []
             rows.append(d)
         return rows
 
@@ -781,9 +828,13 @@ class DB:
             return None
         d = dict(r)
         for k in ("temporal_context", "player_known_state", "macro_context",
-                  "local_context", "feasibility", "immediate_result"):
+                  "local_context", "feasibility", "immediate_result",
+                  "engagement_context", "engagement_method", "movement_effect",
+                  "execution_primitives", "duel_state_sequence", "weapon_matchup"):
             if d.get(k):
                 d[k] = json.loads(d[k])
+        if isinstance(d.get("execution_primitives"), dict):
+            d["execution_primitives"] = []
         d["candidates"] = self.get_decision_candidates(episode_id)
         d["evidence"] = self.get_decision_evidence(episode_id)
         return d

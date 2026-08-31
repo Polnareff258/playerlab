@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import functools
 import math
+import os
 
 from .config import Config
 from .ingest import IngestedDemo
 from .weapons import name_from_def, weapon_class
+from .fieldmap import BUTTON_DUCK
 
 DEG = math.pi / 180.0
 
@@ -90,6 +92,9 @@ def _calibrated_offset(demo_id: str, demo_path: str) -> float:
 
 
 def yaw_offset(demo: IngestedDemo) -> float:
+    # FakeDemo / non-file demos (tests) have no demo_path -> no calibration
+    if not getattr(demo, "demo_path", None) or not os.path.isfile(demo.demo_path):
+        return 0.0
     return _calibrated_offset(demo.demo_id, demo.demo_path)
 
 
@@ -318,6 +323,41 @@ class KnownStateBuilder:
         own_money = myrec.get("money") if myrec else None
         own_hp = myrec.get("health") if myrec else None
         own_weapon_def = myrec.get("weapon_def") if myrec else None
+        own_ammo = myrec.get("ammo_clip") if myrec else None
+        own_zoom = myrec.get("zoom_level") if myrec else None
+        own_flash = myrec.get("flash_duration") if myrec else None
+        own_duck = bool((myrec or {}).get("buttons", 0) & BUTTON_DUCK) if myrec else None
+
+        # ---- V1.3.1 utility inventory grounding (spec §29) -------------------
+        # grenade *start* events tell us the player used a utility; inventory
+        # is reconstructed from grenade usage + round reset (approximation:
+        # at round start most players carry a flash + smoke; consumed ones are
+        # removed as their detonate/start events appear).
+        from .weapons import UTILITY_DEFS
+        used = {"flashbang": 0, "smokegrenade": 0, "hegrenade": 0,
+                "molotov": 0, "incgrenade": 0}
+        rnum_now = self.demo.round_of_tick(tick)
+        for gname, glist in self.demo.events.get("grenades", {}).items():
+            for g in glist:
+                if g.get("user_steamid") != steamid or g["tick"] > tick:
+                    continue
+                if self.demo.round_of_tick(g["tick"]) != rnum_now:
+                    continue
+                kind = gname.replace("_detonate", "").replace("_startburn", "")
+                if kind in used:
+                    used[kind] += 1
+        # round-start estimate: assume the player had a flash + smoke this round
+        # (CS2 standard T/CT buy); consumed counts reduce availability.
+        flash_count = max(0, 1 - used["flashbang"])
+        smoke_count = max(0, 1 - used["smokegrenade"])
+        he_count = max(0, 1 - used["hegrenade"])
+        molotov_count = max(0, 1 - used["molotov"] - used["incgrenade"])
+        utility_inventory = {
+            "flash_count": flash_count, "smoke_count": smoke_count,
+            "he_count": he_count, "molotov_count": molotov_count,
+            "note": "round-start estimate (1 flash + 1 smoke assumed); "
+                    "consumed utilities subtracted from detonate events",
+        }
 
         # teammates visible to the player (own FOV only; public-ish via vision)
         teammate_near = 0
@@ -454,7 +494,10 @@ class KnownStateBuilder:
             "own": {"hp": own_hp, "money": own_money,
                     "weapon_def": own_weapon_def,
                     "weapon_class": weapon_class(name_from_def(own_weapon_def))
-                    if own_weapon_def is not None else "unknown"},
+                    if own_weapon_def is not None else "unknown",
+                    "ammo_clip": own_ammo, "zoom_level": own_zoom,
+                    "flash_duration": own_flash, "is_ducking": own_duck},
+            "utility_inventory": utility_inventory,
             "vision_model": "approx_fov_no_occlusion_v1",
         }
 

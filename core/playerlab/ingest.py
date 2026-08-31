@@ -120,7 +120,7 @@ def _tick_state_index(demo: "IngestedDemo"):
 
 STEAMID_KEYS = ("user_steamid", "attacker_steamid", "steamid", "assister_steamid")
 
-CACHE_VERSION = "v3"  # bump when tick-property parsing changes
+CACHE_VERSION = "v4"  # bump when tick-property parsing changes (V1.3.1 duel fields)
 
 
 def vec(series, i):
