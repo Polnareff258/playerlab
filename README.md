@@ -76,3 +76,13 @@ python3 -m playerlab.cli api --port 8123                 # 本地 UI + API
 
 依赖：Python 3.11+、`demoparser2==0.42.0`（+ pandas）。其余全部 stdlib（sqlite3/http.server）。
 数据默认落在 `playerlab/data/`（SQLite + analyses/ 缓存）。测试：`python3 tests\test_core.py`（10 项全部通过）。
+
+## 隐私与 GitHub
+
+- **demo 数据绝不入库**：`data/`（SQLite + canonical + tick 缓存）、`backtest/`（QA 批次/截图）、探针输出均含真实玩家 steamid/昵称与本地路径，已在 `.gitignore` 中排除；提交前对文档样例做了匿名化（PlayerA/B）并移除了本机路径。
+- 仓库：https://github.com/Polnareff258/playerlab （Private）
+- 本机推送约定（沙箱环境）：TLS 后端用 openssl（repo 级已配置）。在普通终端先运行一次 `gh auth setup-git`，之后 `git push` 即可；若仍报认证错误，用一次性 token URL 推送（token 不写入 `.git/config`）：
+  ```powershell
+  $url = "https://x-access-token:$((gh auth token))@github.com/Polnareff258/playerlab.git"
+  git push $url master:master
+  ```
