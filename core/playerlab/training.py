@@ -99,6 +99,60 @@ def generate_targets(db: DB, cfg: Config, bottlenecks: list[dict]) -> list[dict]
     return created
 
 
+def generate_targets_from_episodes(db: DB, cfg: Config,
+                                   episode_patterns: list[dict]) -> list[dict]:
+    """V1.3 (spec §40-§41, §43-§44): TrainingTargets from repeated Decision
+    Episode patterns (clustering over action family x advantage state x
+    context bucket), with Actionability gate (spec §64)."""
+    created = []
+    active = [t for t in db.get_targets() if t["status"] in ("ACTIVE", "IMPROVING")]
+    active_ids = {t["pattern_type"] for t in active}
+    for pat in episode_patterns:
+        pid = pat["pattern_id"]
+        if pid in active_ids:
+            continue
+        n = pat["sample_count"]
+        if n < cfg.min_pattern_samples or pat["actionability_share"] < 0.5:
+            continue
+        baseline = pat["violation_rate"]
+        goal = round(min(baseline, max(0.001, baseline * 0.5)), 3)
+        spec = {
+            "name": pat["name"],
+            "category": "Macro Decision" if pat["family"] == "ADVANTAGE_PRESERVATION"
+                        else "Micro Decision",
+            "trigger": pat["trigger"],
+            "undesired": pat["undesired"],
+            "replacement": pat["replacement"],
+            "measure": f"{pid}_rate = violations / episodes",
+            "cue": {"when": pat["trigger"], "do": pat["replacement"],
+                    "avoid": pat["undesired"]},
+        }
+        target = {
+            "target_id": pid,
+            "pattern_type": pid, "name": spec["name"], "category": spec["category"],
+            "trigger": spec["trigger"], "undesired_behavior": spec["undesired"],
+            "replacement_behavior": spec["replacement"],
+            "baseline": baseline, "goal": goal,
+            "measurement_definition": spec["measure"],
+            "measurement_window": cfg.validation_window_matches,
+            "status": "ACTIVE", "progress": 0.0,
+            "confidence": pat["confidence"],
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "next_match_cue": spec["cue"],
+            "source_pattern_ids": [pid],
+            "supporting_evidence": pat["breakdown"],
+            "macro_reason": pat.get("macro_reason"),
+        }
+        db.upsert_target(target)
+        db.insert_target_history({"id": uuid.uuid4().hex[:12], "target_id": pid,
+                                  "from_status": None, "status": "ACTIVE",
+                                  "at": target["created_at"],
+                                  "reason": "generated from decision episode pattern"})
+        active_ids.add(pid)
+        created.append(target)
+    return created
+
+
 def active_focus(db: DB) -> list[dict]:
     return [t for t in db.get_targets() if t["status"] in ("ACTIVE", "IMPROVING")]
 

@@ -57,6 +57,14 @@ def run_alpha(demo: IngestedDemo, cfg: Config, db: DB) -> dict:
                                 ctx.get("commitment_map"), ctx.get("role_map")):
         db.upsert_root_cause(rc)
 
+    # 3b) V1.3 decision episodes (spec §4-§28) + episode patterns (spec §42-§44)
+    from .episode import run_episodes
+    from .episode_patterns import cluster_episodes
+    from .training import generate_targets_from_episodes
+    ep_result = run_episodes(demo, cfg, db, model_provider=None)
+    episode_patterns = cluster_episodes(db, cfg)
+    ep_targets = generate_targets_from_episodes(db, cfg, episode_patterns)
+
     # 4) aggregation + ranking
     matches_count = len(db.list_matches())
     patterns = [aggregate_patterns(db, cfg, p, matches_count)
@@ -87,4 +95,7 @@ def run_alpha(demo: IngestedDemo, cfg: Config, db: DB) -> dict:
         "review_items": len(items),
         "context": {k: ctx[k] for k in ("context_events", "intent_samples",
                                         "intent_distribution")},
+        "episodes": ep_result,
+        "episode_patterns": episode_patterns,
+        "episode_targets": ep_targets,
     }

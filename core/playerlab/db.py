@@ -10,6 +10,7 @@ import json
 import math
 import os
 import sqlite3
+import time
 
 
 def js(value):
@@ -170,6 +171,54 @@ _ADD_COLUMNS_V4 = [
     ("intent_samples", "human_label2", "TEXT"),
 ]
 
+# V1.3 decision-episode schema (schema_version = 5): the DecisionEpisode
+# becomes the primary analysis unit (spec §4/§68).
+V13_SCHEMA = """
+CREATE TABLE IF NOT EXISTS decision_episodes (
+    id TEXT PRIMARY KEY, match_id TEXT, round INTEGER, player_id INTEGER,
+    family TEXT, start_tick INTEGER, anchor_tick INTEGER, end_tick INTEGER,
+    temporal_context TEXT, player_known_state TEXT,
+    macro_context TEXT, local_context TEXT,
+    commitment_state TEXT, situational_role TEXT, intent TEXT,
+    observed_action TEXT,
+    feasibility TEXT,
+    immediate_result TEXT,
+    state_value_before REAL, state_value_after REAL,
+    decision_evaluation TEXT, actionability TEXT,
+    confidence REAL, extractor_version TEXT,
+    context_version TEXT, rule_version TEXT,
+    model_provider_version TEXT, geometry_version TEXT,
+    computed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS decision_candidates (
+    id TEXT PRIMARY KEY, episode_id TEXT, action TEXT,
+    feasibility TEXT, feasibility_reason TEXT,
+    expected_risk TEXT, expected_information_gain TEXT,
+    expected_team_value TEXT, expected_objective_value TEXT,
+    evidence TEXT, confidence REAL, rank INTEGER
+);
+CREATE TABLE IF NOT EXISTS decision_evidence (
+    id TEXT PRIMARY KEY, episode_id TEXT, candidate_action TEXT,
+    source TEXT, type TEXT, supports_action TEXT, contradicts_action TEXT,
+    confidence REAL, sample_count INTEGER, source_version TEXT,
+    scope TEXT, notes TEXT, related_sources TEXT
+);
+CREATE TABLE IF NOT EXISTS decision_preferences (
+    id TEXT PRIMARY KEY, episode_id TEXT, match_id TEXT, round INTEGER,
+    tick INTEGER, candidate_a TEXT, candidate_b TEXT,
+    human_choice TEXT, human_confidence REAL, reason_code TEXT,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS decision_episode_links (
+    id TEXT PRIMARY KEY, episode_id TEXT, link_type TEXT,
+    target_id TEXT, created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_de_match ON decision_episodes (match_id);
+CREATE INDEX IF NOT EXISTS idx_de_player ON decision_episodes (player_id, family);
+CREATE INDEX IF NOT EXISTS idx_dc_episode ON decision_candidates (episode_id);
+CREATE INDEX IF NOT EXISTS idx_dev_episode ON decision_evidence (episode_id);
+"""
+
 
 class DB:
     def __init__(self, path: str):
@@ -215,6 +264,9 @@ class DB:
             if "candidates" not in cols:
                 self.conn.execute("ALTER TABLE review_queue ADD COLUMN candidates TEXT")
             self.conn.execute("UPDATE schema_version SET version=4")
+        if current < 5:
+            self.conn.executescript(V13_SCHEMA)
+            self.conn.execute("UPDATE schema_version SET version=5")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -676,3 +728,152 @@ class DB:
                 d[k] = json.loads(v) if v else {}
             rows.append(d)
         return rows
+
+    # ---- V1.3 decision episodes ----
+    _DE_COLS = ("id", "match_id", "round", "player_id", "family", "start_tick",
+                "anchor_tick", "end_tick", "temporal_context", "player_known_state",
+                "macro_context", "local_context", "commitment_state",
+                "situational_role", "intent", "observed_action", "feasibility",
+                "immediate_result", "state_value_before", "state_value_after",
+                "decision_evaluation", "actionability", "confidence",
+                "extractor_version", "context_version", "rule_version",
+                "model_provider_version", "geometry_version", "computed_at")
+
+    def upsert_decision_episode(self, e: dict):
+        cols = self._DE_COLS
+        params = dict(e)
+        for k in ("temporal_context", "player_known_state", "macro_context",
+                  "local_context", "feasibility", "immediate_result"):
+            v = params.get(k)
+            if isinstance(v, (dict, list)):
+                params[k] = jd(v)
+        self.conn.execute(
+            f"INSERT OR REPLACE INTO decision_episodes ({','.join(cols)}) "
+            f"VALUES ({','.join(':' + c for c in cols)})", params)
+        self.conn.commit()
+
+    def get_decision_episodes(self, match_id=None, player_id=None, family=None,
+                              limit=500):
+        q = "SELECT * FROM decision_episodes"
+        conds, args = [], []
+        if match_id:
+            conds.append("match_id=?"); args.append(match_id)
+        if player_id:
+            conds.append("player_id=?"); args.append(player_id)
+        if family:
+            conds.append("family=?"); args.append(family)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        rows = []
+        for r in self.conn.execute(q + f" ORDER BY anchor_tick LIMIT {limit}", args):
+            d = dict(r)
+            for k in ("temporal_context", "player_known_state", "macro_context",
+                      "local_context", "feasibility", "immediate_result"):
+                if d.get(k):
+                    d[k] = json.loads(d[k])
+            rows.append(d)
+        return rows
+
+    def get_decision_episode(self, episode_id: str):
+        r = self.conn.execute("SELECT * FROM decision_episodes WHERE id=?",
+                              (episode_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        for k in ("temporal_context", "player_known_state", "macro_context",
+                  "local_context", "feasibility", "immediate_result"):
+            if d.get(k):
+                d[k] = json.loads(d[k])
+        d["candidates"] = self.get_decision_candidates(episode_id)
+        d["evidence"] = self.get_decision_evidence(episode_id)
+        return d
+
+    def delete_decision_episodes(self, match_id: str):
+        self.conn.execute("DELETE FROM decision_episodes WHERE match_id=?", (match_id,))
+        self.conn.execute("DELETE FROM decision_candidates WHERE episode_id IN "
+                          "(SELECT id FROM decision_episodes WHERE match_id=?)", (match_id,))
+        self.conn.execute("DELETE FROM decision_evidence WHERE episode_id IN "
+                          "(SELECT id FROM decision_episodes WHERE match_id=?)", (match_id,))
+        self.conn.commit()
+
+    def upsert_decision_candidate(self, c: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO decision_candidates
+               (id, episode_id, action, feasibility, feasibility_reason,
+                expected_risk, expected_information_gain, expected_team_value,
+                expected_objective_value, evidence, confidence, rank)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (c["id"], c["episode_id"], c["action"], c["feasibility"],
+             c.get("feasibility_reason", ""), c.get("expected_risk"),
+             c.get("expected_information_gain"), c.get("expected_team_value"),
+             c.get("expected_objective_value"), jd(c.get("evidence", {})),
+             c.get("confidence"), c.get("rank")))
+        self.conn.commit()
+
+    def get_decision_candidates(self, episode_id: str) -> list[dict]:
+        out = []
+        for r in self.conn.execute(
+                "SELECT * FROM decision_candidates WHERE episode_id=? ORDER BY rank",
+                (episode_id,)):
+            d = dict(r)
+            d["evidence"] = json.loads(d["evidence"]) if d["evidence"] else {}
+            out.append(d)
+        return out
+
+    def upsert_decision_evidence(self, ev: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO decision_evidence
+               (id, episode_id, candidate_action, source, type,
+                supports_action, contradicts_action, confidence, sample_count,
+                source_version, scope, notes, related_sources)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ev["id"], ev["episode_id"], ev.get("candidate_action", ""),
+             ev["source"], ev.get("type", ""), ev.get("supports_action"),
+             ev.get("contradicts_action"), ev.get("confidence"),
+             ev.get("sample_count"), ev.get("source_version"),
+             ev.get("scope", ""), ev.get("notes", ""),
+             jd(ev.get("related_sources", []))))
+        self.conn.commit()
+
+    def get_decision_evidence(self, episode_id: str) -> list[dict]:
+        out = []
+        for r in self.conn.execute(
+                "SELECT * FROM decision_evidence WHERE episode_id=? ORDER BY source",
+                (episode_id,)):
+            d = dict(r)
+            d["related_sources"] = json.loads(d["related_sources"]) if d["related_sources"] else []
+            out.append(d)
+        return out
+
+    def insert_decision_preference(self, p: dict):
+        self.conn.execute(
+            """INSERT INTO decision_preferences
+               (id, episode_id, match_id, round, tick, candidate_a, candidate_b,
+                human_choice, human_confidence, reason_code, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (p["id"], p["episode_id"], p["match_id"], p["round"], p["tick"],
+             p["candidate_a"], p["candidate_b"], p["human_choice"],
+             p.get("human_confidence", 0.6), p.get("reason_code", "OTHER"),
+             p.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))))
+        self.conn.commit()
+
+    def get_decision_preferences(self, episode_id=None, limit=500):
+        q = "SELECT * FROM decision_preferences"
+        if episode_id:
+            q += " WHERE episode_id=?"
+            return [dict(r) for r in self.conn.execute(q + " ORDER BY created_at LIMIT ?",
+                                                       (episode_id, limit))]
+        return [dict(r) for r in self.conn.execute(q + f" ORDER BY created_at LIMIT {limit}")]
+
+    def insert_episode_link(self, link: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO decision_episode_links
+               (id, episode_id, link_type, target_id, created_at)
+               VALUES (?,?,?,?,?)""",
+            (link["id"], link["episode_id"], link["link_type"],
+             link["target_id"], link.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))))
+        self.conn.commit()
+
+    def get_episode_links(self, episode_id: str) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM decision_episode_links WHERE episode_id=?", (episode_id,))]

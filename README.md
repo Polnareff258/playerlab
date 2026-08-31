@@ -1,4 +1,4 @@
-# PlayerLab V1.2.1 — Context Grounding + Optional Model Intelligence
+# PlayerLab V1.3 — Decision Episode & Local Alternatives
 
 本地优先的 CS2 Demo 分析项目。核心目标：
 
@@ -14,6 +14,10 @@ DecisionPoint → GameState → Similar State Retrieval → Counterfactual Compa
 V1.2.1 升级：**Context Grounding**（KnownState 序列 + InformationStrength/Direction
 + Tradeability + 保守责任归因 + Review Quota）+ **Optional Model Intelligence**
 （GameModelProvider / Null / CSNetProvider，CS-NET 作为可选后端）。
+
+V1.3 升级：**DecisionEpisode & Local Alternatives** —— 核心问题从「这一波是谁的锅」转向
+「在当时的信息、职责、局势和可行操作条件下，这个局部选择是否合理」。Macro 解释 Micro，
+Alternatives 先于批评，Feasibility 先于推荐，Actionability 先于训练（spec §1/§104）。
 
 ## 与 DAK Studio 的关系
 
@@ -100,6 +104,20 @@ python3 -m pip install -r requirements-csnet.txt     # 可选依赖（torch 已�
 # 验证：
 python3 -m playerlab.cli model-intelligence --provider csnet
 # 期望：status=ready, tasks=["win_rate"]
+```
+
+### V1.3 — Decision Episode & Local Alternatives（已实现）
+
+在 V1.2.1 之上增加**局部选择分析层**：DecisionEpisode（核心分析单位）、MacroContext（5v4 优势 / 信息需求 / 风险容忍度）、CandidateActions（9 个 MVP 动作 + Feasibility 先行）、DecisionEvaluation（GOOD..POOR，outcome 不参与）、Actionability（5 级，TrainingTarget gate）、Alternative Evidence（rule / historical / personal / CS-NET）、Episode Pattern → TrainingTarget。详见 [docs/DECISION_EPISODE_RESULTS.md](docs/DECISION_EPISODE_RESULTS.md)。
+
+```powershell
+python3 -m playerlab.cli decisions --match <id> --family CONTACT_RESPONSE   # DecisionEpisode 列表
+python3 -m playerlab.cli decision-show <episode_id>                         # 详情（context/candidates/evidence）
+python3 -m playerlab.cli decision-review                                    # 待审 DecisionEpisode
+python3 -m playerlab.cli decision-stats                                     # family/eval/actionability 分布
+python3 -m playerlab.cli decision-preference <episode_id> A                 # pairwise preference
+# API: /api/decisions · /api/decisions/{id} · /api/decisions/{id}/alternatives · POST /api/decisions/{id}/preference
+# UI: Decisions 标签页（KEY DECISIONS：Observed / Alternatives / Why It Matters / Actionability）
 ```
 
 ## 阶段状态

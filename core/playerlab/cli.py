@@ -65,6 +65,18 @@ def main(argv=None):
     p_mi = sub.add_parser("model-intelligence", help="Model Intelligence status (CS-NET)")
     p_mi.add_argument("--provider", default="", help="provider: null | csnet")
     p_mi.add_argument("--models-dir", default="", help="CS-NET models root dir")
+    # V1.3 decision episodes (spec §70)
+    p_dec = sub.add_parser("decisions", help="list DecisionEpisodes")
+    p_dec.add_argument("--match", default="", help="filter by match id")
+    p_dec.add_argument("--family", default="", help="filter by family")
+    p_dec.add_argument("--limit", type=int, default=20)
+    p_ds = sub.add_parser("decision-show", help="show one DecisionEpisode")
+    p_ds.add_argument("episode_id")
+    sub.add_parser("decision-review", help="pending DecisionEpisode review items")
+    sub.add_parser("decision-stats", help="DecisionEpisode distributions")
+    p_dpref = sub.add_parser("decision-preference", help="submit a pairwise preference")
+    p_dpref.add_argument("episode_id")
+    p_dpref.add_argument("choice", help="A / B / BOTH / NEITHER / UNSURE")
     p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
     p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
     p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
@@ -215,6 +227,72 @@ def main(argv=None):
         prov = get_provider(provider, **kw)
         print(json.dumps(prov.get_metadata(), ensure_ascii=False, indent=1, default=str))
         print("supported tasks:", prov.get_supported_tasks())
+    elif args.cmd == "decisions":
+        from .db import DB
+        db = DB(cfg.db_path)
+        eps = db.get_decision_episodes(match_id=args.match or None,
+                                       family=args.family or None, limit=args.limit)
+        print(f"{'family':<24} {'obs':<12} {'eval':<20} {'actionability':<18} tick")
+        for e in eps:
+            print(f"{e['family']:<24} {e['observed_action']:<12} "
+                  f"{e['decision_evaluation']:<20} {e['actionability']:<18} {e['anchor_tick']}")
+        print(f"total: {len(eps)}")
+    elif args.cmd == "decision-show":
+        from .db import DB
+        db = DB(cfg.db_path)
+        ep = db.get_decision_episode(args.episode_id)
+        if not ep:
+            print(f"episode not found: {args.episode_id}")
+        else:
+            print(json.dumps({
+                "id": ep["id"], "family": ep["family"], "round": ep["round"],
+                "tick": ep["anchor_tick"], "observed": ep["observed_action"],
+                "evaluation": ep["decision_evaluation"],
+                "actionability": ep["actionability"],
+                "macro": ep["macro_context"], "intent": ep["intent"],
+                "commitment": ep["commitment_state"],
+                "candidates": ep.get("candidates", []),
+                "evidence": ep.get("evidence", []),
+            }, ensure_ascii=False, indent=1, default=str))
+    elif args.cmd == "decision-review":
+        from .db import DB
+        db = DB(cfg.db_path)
+        for r_ in db.get_review_queue(limit=30):
+            if r_["item_type"] != "decision_episode":
+                continue
+            print(f"{r_['priority']:.2f} {r_['event_id']} r{r_['round']} t{r_['tick']} "
+                  f"pred={r_['model_prediction']} | {r_['rationale']}")
+    elif args.cmd == "decision-stats":
+        from .db import DB
+        from collections import Counter
+        db = DB(cfg.db_path)
+        eps = db.get_decision_episodes(limit=2000)
+        print("total:", len(eps))
+        print("family:", dict(Counter(e["family"] for e in eps)))
+        print("evaluation:", dict(Counter(e["decision_evaluation"] for e in eps)))
+        print("actionability:", dict(Counter(e["actionability"] for e in eps)))
+        print("observed:", dict(Counter(e["observed_action"] for e in eps)))
+    elif args.cmd == "decision-preference":
+        from .db import DB
+        from .episode import _candidate_actions  # noqa: F401 (schema reuse)
+        db = DB(cfg.db_path)
+        ep = db.get_decision_episode(args.episode_id)
+        if not ep:
+            print(f"episode not found: {args.episode_id}")
+        else:
+            cands = ep.get("candidates", [])
+            if len(cands) < 2:
+                print("need >=2 feasible candidates for preference")
+            else:
+                a, b = cands[0]["action"], cands[1]["action"]
+                import uuid as _uuid
+                db.insert_decision_preference({
+                    "id": _uuid.uuid4().hex[:16], "episode_id": ep["id"],
+                    "match_id": ep["match_id"], "round": ep["round"],
+                    "tick": ep["anchor_tick"], "candidate_a": a, "candidate_b": b,
+                    "human_choice": args.choice, "human_confidence": 0.6,
+                    "reason_code": "OTHER"})
+                print(f"preference saved: {a} vs {b} -> {args.choice}")
     elif args.cmd == "annotations":
         from .db import DB
         from .annotation import annotation_stats, export_annotations

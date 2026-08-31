@@ -154,6 +154,39 @@ def build_review_queue(db: DB, cfg: Config, match_id: str,
                 "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
 
+    # V1.3: DecisionEpisode review (spec §49-§51): 3-5 high-value episodes
+    for ep in db.get_decision_episodes(match_id=match_id, limit=500):
+        prio = 0.0
+        reasons = []
+        if ep["actionability"] in ("HIGHLY_ACTIONABLE", "ACTIONABLE"):
+            prio += 0.35
+            reasons.append("actionable")
+        if ep["decision_evaluation"] in ("QUESTIONABLE", "POOR"):
+            prio += 0.3
+            reasons.append(f"evaluation={ep['decision_evaluation']}")
+        if ep["decision_evaluation"] == "INSUFFICIENT_EVIDENCE":
+            prio += 0.15
+            reasons.append("low-confidence evaluation")
+        if ep["intent"] == "AMBIGUOUS":
+            prio += 0.1
+            reasons.append("ambiguous intent")
+        if prio < 0.35:
+            continue
+        items.append({
+            "id": f"{ep['id']}-decision", "match_id": match_id,
+            "round": ep["round"], "tick": ep["anchor_tick"],
+            "event_id": ep["id"], "dp_id": None,
+            "item_type": "decision_episode",
+            "priority": round(min(0.95, prio), 3),
+            "model_prediction": ep["observed_action"],
+            "model_confidence": ep["confidence"],
+            "rationale": f"decision episode {ep['family']}: " + "; ".join(reasons),
+            "candidates": [c["action"] for c in
+                           db.get_decision_candidates(ep["id"])
+                           if c["feasibility"] not in ("UNAVAILABLE", "TEMPORARILY_UNAVAILABLE")][:5],
+            "status": "pending", "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+
     # quota allocation: stable ordering (priority desc), cap per category
     items.sort(key=lambda i: i["priority"], reverse=True)
     buckets = {"intent": [], "responsibility": [], "pattern": [], "other": []}
@@ -161,6 +194,8 @@ def build_review_queue(db: DB, cfg: Config, match_id: str,
         t = it["item_type"]
         if t in ("intent", "responsibility"):
             buckets[t].append(it)
+        elif t == "decision_episode":
+            buckets["pattern"].append(it)   # shares the pattern/other quota
         elif t.endswith("_sample") or t == "root_cause":
             buckets["pattern"].append(it)
         else:

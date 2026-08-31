@@ -143,6 +143,46 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                  "intent_distribution": _intent_dist(db)})
                 elif path == "/api/model-intelligence":
                     _json(self, {"model_intelligence": _model_intelligence(cfg)})
+                elif path == "/api/decisions":
+                    q_match = q.get("match", [None])[0]
+                    q_family = q.get("family", [None])[0]
+                    eps = db.get_decision_episodes(match_id=q_match,
+                                                   family=q_family, limit=200)
+                    for e in eps:
+                        e["candidates"] = db.get_decision_candidates(e["id"])
+                    _json(self, {"decisions": eps})
+                elif path.startswith("/api/decisions/"):
+                    ep_id = path[len("/api/decisions/"):]
+                    if ep_id.endswith("/alternatives"):
+                        ep_id = ep_id[:-len("/alternatives")]
+                        ep = db.get_decision_episode(ep_id)
+                        if not ep:
+                            return _json(self, {"error": "episode not found"}, 404)
+                        _json(self, {"episode_id": ep_id,
+                                     "observed_action": ep["observed_action"],
+                                     "candidates": ep.get("candidates", [])})
+                    elif ep_id.endswith("/preference"):
+                        ep_id = ep_id[:-len("/preference")]
+                        if self.command == "POST":
+                            return _json(self, {"error": "use POST"}, 405)
+                        ep = db.get_decision_episode(ep_id)
+                        if not ep:
+                            return _json(self, {"error": "episode not found"}, 404)
+                        _json(self, {"preferences": db.get_decision_preferences(ep_id)})
+                    else:
+                        ep = db.get_decision_episode(ep_id)
+                        if not ep:
+                            return _json(self, {"error": "episode not found"}, 404)
+                        _json(self, {"decision": ep})
+                elif path == "/api/decision-stats":
+                    from collections import Counter
+                    eps = db.get_decision_episodes(limit=2000)
+                    _json(self, {"stats": {
+                        "total": len(eps),
+                        "family": dict(Counter(e["family"] for e in eps)),
+                        "evaluation": dict(Counter(e["decision_evaluation"] for e in eps)),
+                        "actionability": dict(Counter(e["actionability"] for e in eps)),
+                    }})
                 else:
                     _json(self, {"error": "not found"}, 404)
             except Exception as e:  # noqa: BLE001
@@ -185,6 +225,26 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     if item:
                         db.mark_review_done(rid)
                     _json(self, {"preference": rec})
+                elif path.startswith("/api/decisions/") and path.endswith("/preference"):
+                    ep_id = path[len("/api/decisions/"):-len("/preference")]
+                    ep = db.get_decision_episode(ep_id)
+                    if not ep:
+                        return _json(self, {"error": "episode not found"}, 404)
+                    cands = [c for c in (ep.get("candidates") or [])
+                             if c["feasibility"] not in ("UNAVAILABLE", "TEMPORARILY_UNAVAILABLE")]
+                    a = body.get("candidate_a") or (cands[0]["action"] if cands else "")
+                    b = body.get("candidate_b") or (
+                        next((c["action"] for c in cands if c["action"] != a), a)
+                        if cands else a)
+                    import uuid as _uuid
+                    db.insert_decision_preference({
+                        "id": _uuid.uuid4().hex[:16], "episode_id": ep_id,
+                        "match_id": ep["match_id"], "round": ep["round"],
+                        "tick": ep["anchor_tick"], "candidate_a": a, "candidate_b": b,
+                        "human_choice": body.get("human_choice", "UNSURE"),
+                        "human_confidence": float(body.get("human_confidence", 0.6)),
+                        "reason_code": body.get("reason_code", "OTHER")})
+                    _json(self, {"saved": True, "episode_id": ep_id, "a": a, "b": b})
                 else:
                     _json(self, {"error": "not found"}, 404)
             except Exception as e:  # noqa: BLE001

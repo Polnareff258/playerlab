@@ -60,10 +60,11 @@
 </head>
 <body>
 <header>
-  <h1>PlayerLab <span>V1.2.1</span></h1>
-  <span>Context Grounding + Model Intelligence</span>
+  <h1>PlayerLab <span>V1.3</span></h1>
+  <span>Decision Episode + Local Alternatives</span>
   <nav>
     <button id="tab-focus" class="on" onclick="goto('focus')">Focus</button>
+    <button id="tab-decisions" onclick="goto('decisions')">Decisions</button>
     <button id="tab-matches" onclick="goto('matches')">Matches</button>
     <button id="tab-review" onclick="goto('review')">Review</button>
   </nav>
@@ -82,13 +83,14 @@ async function api(path, opts) {
   return j;
 }
 function toast(m){ const t=$("#toast"); t.textContent=m; t.style.display="block"; setTimeout(()=>t.style.display="none",2600); }
-function setTab(t){ ["focus","matches","review"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
+function setTab(t){ ["focus","decisions","matches","review"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
 
 async function goto(t){
   setTab(t);
   const el=$("#app"); el.innerHTML=`<span class="muted">loading…</span>`;
   try {
     if (t==="focus") return renderFocus(el);
+    if (t==="decisions") return renderDecisions(el);
     if (t==="matches") return renderMatches(el);
     return renderReview(el);
   } catch(e){ el.innerHTML=`<span style="color:var(--bad)">${esc(e.message)}</span>`; }
@@ -181,6 +183,7 @@ async function renderReview(el){
   if (!review.length) html += `<div class="card"><span class="muted">暂无待审样本（标注会写入 HumanAnnotation，预测与纠正分离保存）</span></div>`;
   for (const it of review){
     const isIntent = it.item_type === "intent";
+    const isDecision = it.item_type === "decision_episode";
     const intentBtns = isIntent ? `
       <div class="row" style="margin-top:8px">
         <span class="muted" style="font-size:12px">Intent 更接近?</span>
@@ -192,6 +195,18 @@ async function renderReview(el){
         <span class="muted" style="font-size:12px">偏好哪个候选?</span>
         <button class="btn" onclick="pref('${it.id}','${it.candidates[0]}')">${it.candidates[0]}</button>
         <button class="btn" onclick="pref('${it.id}','${it.candidates[1]}')">${it.candidates[1]}</button>
+      </div>` : "";
+    const decisionBtns = isDecision ? `
+      <div class="row" style="margin-top:8px">
+        <span class="muted" style="font-size:12px">Decision was…</span>
+        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">Correct</button>
+        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">Wrong</button>
+        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">Unsure</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <span class="muted" style="font-size:12px">候选比较（当时局面哪个更合理）?</span>
+        ${(it.candidates||[]).slice(0,3).map(c=>
+          `<button class="btn" onclick="decisionPref('${it.event_id}','${c}')">${c}</button>`).join("")}
       </div>` : "";
     html += `<div class="rev">
       <div class="row"><span class="chip">${esc(it.item_type)}</span>
@@ -211,7 +226,7 @@ async function renderReview(el){
              "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option>${c}</option>`).join("")}
         </select>
         <input id="cm-${it.id}" placeholder="备注（可选）" style="max-width:180px">
-      </div>${intentBtns}${prefBtns}
+      </div>${intentBtns}${prefBtns}${decisionBtns}
     </div>`;
   }
   const stats = await api("/api/annotations/stats").catch(()=>({}));
@@ -246,11 +261,54 @@ async function pref(reviewId, choice){
     toast("Preference 已保存"); goto("review");
   } catch(e){ toast(e.message); }
 }
+async function decisionPref(episodeId, action){
+  try {
+    await api("/api/decisions/"+episodeId+"/preference", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({candidate_a:action, human_choice:"A",
+                            human_confidence:0.6, reason_code:"OTHER"})});
+    toast("Decision 候选偏好已保存"); goto("review");
+  } catch(e){ toast(e.message); }
+}
+
+/* ---------------- Decisions (V1.3 DecisionEpisode) ---------------- */
+async function renderDecisions(el){
+  const { decisions } = await api("/api/decisions");
+  const { stats } = await api("/api/decision-stats").catch(()=>({stats:{}}));
+  let html = `<h2>DECISIONS <span class="muted">(DecisionEpisode — 局部选择分析)</span></h2>`;
+  if (stats && stats.total) html += `<div class="card mono muted" style="font-size:11px">
+    episodes=${stats.total} · family=${esc(JSON.stringify(stats.family))} ·
+    eval=${esc(JSON.stringify(stats.evaluation))} · actionability=${esc(JSON.stringify(stats.actionability))}
+  </div>`;
+  if (!decisions.length) html += `<div class="card"><span class="muted">暂无 DecisionEpisode（运行 alpha 管线后生成）</span></div>`;
+  for (const d of decisions){
+    const m = d.macro_context || {};
+    const why = m.need_for_information && m.advantage_state
+      ? `You were <b>${esc(m.advantage_state.replace("_"," "))}</b> · info need <b>${esc(m.need_for_information)}</b> · risk tolerance <b>${esc(m.risk_tolerance||"—")}</b>.`
+      : "context unknown";
+    const cands = (d.candidates||[]).filter(c=>!["UNAVAILABLE","TEMPORARILY_UNAVAILABLE"].includes(c.feasibility));
+    html += `<div class="card">
+      <div class="row">
+        <span class="chip ${d.actionability==="NOT_ACTIONABLE"?"":d.actionability==="HIGHLY_ACTIONABLE"?"ok":"MEDIUM"}">${esc(d.actionability)}</span>
+        <span class="chip ${d.decision_evaluation==="POOR"?"MEDIUM":d.decision_evaluation==="GOOD"?"ok":""}">${esc(d.decision_evaluation)}</span>
+        <b>${esc(d.family.replace("_"," "))}</b>
+        <span class="mono muted">r${d.round} t${d.anchor_tick} p${d.player_id}</span>
+      </div>
+      <div class="why"><b>OBSERVED</b>: ${esc(d.observed_action)} · commitment ${esc(d.commitment_state)} · intent ${esc(d.intent)}</div>
+      <div class="why"><b>WHY IT MATTERS</b>: ${why}</div>
+      <div class="row" style="margin-top:6px">
+        <span class="muted" style="font-size:12px">Alternatives:</span>
+        ${cands.map(c=>`<span class="chip">${esc(c.action)} <span class="muted">${esc(c.feasibility)}</span></span>`).join("")}
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
 
 window.addEventListener("hashchange", () => {
   const h = location.hash;
   if (h.startsWith("#/match")) return renderMatches($("#app"));
-  goto(h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
+  goto(h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
 });
 goto("focus");
 </script>
