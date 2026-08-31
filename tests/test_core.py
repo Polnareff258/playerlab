@@ -207,8 +207,7 @@ def test_batch_discover():
 def test_batch_dry_run_and_failure_tolerance():
     from playerlab.batch import run_batch, summarize
     d = _make_demo_dir()
-    cfg = Config()
-    cfg.data_dir = os.path.join(d, "data")
+    cfg = Config(data_dir=os.path.join(d, "data"))  # isolated db, never the real one
     res = run_batch(cfg, [d], dry_run=True, verbose=False)
     assert {r["status"] for r in res} == {"would_ingest"}
     res2 = run_batch(cfg, [d], verbose=False)
@@ -224,8 +223,7 @@ def test_batch_skip_existing():
     from playerlab.ingest import demo_id_for
     from playerlab.db import DB
     d = _make_demo_dir()
-    cfg = Config()
-    cfg.data_dir = os.path.join(d, "data")
+    cfg = Config(data_dir=os.path.join(d, "data"))  # isolated db, never the real one
     db = DB(cfg.db_path)
     demo = os.path.join(d, "a.dem")
     demo_id = demo_id_for(demo)

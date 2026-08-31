@@ -31,6 +31,19 @@ PlayerLab 不通过重复实现 mechanics dashboard 制造差异，只消费现�
 | [docs/MVP_PLAN.md](docs/MVP_PLAN.md) | 阶段 5：MVP 实现计划（M0–M8） | ✅ |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | V1.5 / V2 / V2+ / V3 路线（不实现） | ✅ |
 
+### V1.1 — Evidence-Driven Improvement Loop（设计阶段）
+
+| 文档 | 内容 | 状态 |
+| --- | --- | --- |
+| [docs/V1_1_AUDIT.md](docs/V1_1_AUDIT.md) | Phase 1：仓库审计（V1 现状 / 复用组件 / 缺口） | ✅ |
+| [docs/REUSE_MATRIX.md](docs/REUSE_MATRIX.md) | Phase 2：外部能力审计（Freezetime / structural-analytics / CounterStrafe / AWPy / CS Demo Manager / demoparser2） | ✅ |
+| [docs/IMPROVEMENT_MODEL.md](docs/IMPROVEMENT_MODEL.md) | Phase 3：改进模型（Decision Hierarchy / Root Cause / Pattern / Bottleneck / TrainingTarget / Validation） | ✅ |
+| [docs/MACRO_DECISION_DESIGN.md](docs/MACRO_DECISION_DESIGN.md) | Phase 4：宏观决策设计（信息纪律 / 旋转 / 优势 / 间距 / 区域控制 / 时机） | ✅ |
+| [docs/V1_1_MVP.md](docs/V1_1_MVP.md) | Phase 5：MVP 选型（8 模式 + 支撑层 + 验证路径） | ✅ |
+| [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) | Phase 6：实现计划（模块/文件/Schema/迁移/测试/UI/Token 边界） | ✅ |
+
+**V1.1 定位**：不是加更多复盘指标，而是闭环 PLAY → OBSERVE → DIAGNOSE → TRAINING TARGET → VALIDATE —— 一次只改 1–2 个行为，后续 Demo 自动验证行为是否真正改善。Phase 6 完成后**暂停等待确认**。
+
 ## 阶段状态
 
 - [x] 阶段 1：现有项目研究 → EXISTING_PROJECTS.md
