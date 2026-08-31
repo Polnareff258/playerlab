@@ -53,6 +53,25 @@ class Config:
     top_k: int = 50
     exclude_same_match: bool = True   # retrieval leakage guard
 
+    # --- alpha patterns (V1.1-alpha) ---
+    repeek_time_delta_max_ticks: int = 192   # "within 3 seconds" at 64 tick
+    repeek_angle_max_deg: float = 35.0
+    move_shoot_velocity: float = 130.0       # u/s horizontal velocity at shot -> violation
+    stabilize_velocity: float = 60.0         # u/s considered "stopped enough"
+    pre_shot_window_ticks: int = 24          # speed curve lookback before a shot
+    advantage_min_diff: int = 1              # team_alive - enemy_alive >= 1 = advantage
+    advantage_isolated_dist: float = 1600.0  # nearest teammate beyond this = isolated
+    advantage_engagement_dist: float = 2400.0  # engagement zone radius around player
+    objective_urgency_bomb_s: float = 30.0   # bomb planted & < this remaining = urgent
+    min_pattern_samples: int = 8             # eligibility for TrainingTarget
+    min_pattern_confidence: float = 0.4
+    validation_window_matches: int = 5
+    trainability: dict = field(default_factory=lambda: {
+        "repeek": 0.9, "move_shoot": 0.9, "advantage": 0.6})
+    impact_weights: dict = field(default_factory=lambda: {
+        "death": 1.0, "duel_loss": 0.8, "round_loss": 0.7, "positional_loss": 0.4})
+    review_budget_per_match: int = 4
+
     # --- evidence discipline (COUNTERFACTUAL_DESIGN §8) ---
     n_min_claim: int = 10
     n_min_action: int = 5

@@ -46,6 +46,16 @@ def main(argv=None):
     p_qa.add_argument("--out", default="")
     p_qa.add_argument("--n", type=int, default=60)
     sub.add_parser("ablation", help="feature-subset ablation")
+    p_alpha = sub.add_parser("alpha", help="ingest + alpha pipeline on a demo")
+    p_alpha.add_argument("demo")
+    sub.add_parser("patterns", help="alpha pattern aggregation")
+    sub.add_parser("focus", help="current active training targets")
+    sub.add_parser("targets", help="training targets + measurements")
+    sub.add_parser("target-validate", help="run validation on active targets")
+    sub.add_parser("review", help="pending review queue")
+    p_ann = sub.add_parser("annotations", help="annotation commands")
+    p_ann.add_argument("action", choices=("export", "stats"))
+    p_ann.add_argument("--out", default="")
     p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
     p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
     p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
@@ -128,6 +138,53 @@ def main(argv=None):
         for name, r in res.items():
             print(f"{name:<22} {r['n_predictions']:>4} {r['brier']:>7.4f} "
                   f"{r['max_calibration_deviation_pp']:>10.2f}")
+    elif args.cmd == "alpha":
+        _cmd_alpha(cfg, args.demo)
+    elif args.cmd == "patterns":
+        from .db import DB
+        db = DB(cfg.db_path)
+        for p in db.get_patterns():
+            print(f"{p['pattern_type']:<12} n={p['sample_count']:>3} "
+                  f"viol={p['violation_rate']:.2f} conf={p['confidence']:.2f} "
+                  f"cf={p['counterfactual_support']}")
+    elif args.cmd == "focus":
+        from .db import DB
+        from .training import active_focus
+        db = DB(cfg.db_path)
+        for t in active_focus(db):
+            print(f"[{t['status']}] {t['name']} | baseline={t['baseline']:.2f} "
+                  f"goal={t['goal']:.2f} progress={t['progress']:.2f}")
+    elif args.cmd == "targets":
+        from .db import DB
+        db = DB(cfg.db_path)
+        for t in db.get_targets():
+            print(f"[{t['status']:<10}] {t['name']}")
+            for m in db.get_measurements(t["target_id"]):
+                print(f"    window {m['window_start'][:10]}..{m['window_end'][:10]} "
+                      f"n={m['opportunities']} rate={m['rate']:.3f} "
+                      f"behavior={m['behavior_verdict']} outcome={m['outcome_verdict']}")
+    elif args.cmd == "target-validate":
+        from .db import DB
+        from .training import validate_targets
+        db = DB(cfg.db_path)
+        for v in validate_targets(db, cfg):
+            print(v)
+    elif args.cmd == "review":
+        from .db import DB
+        db = DB(cfg.db_path)
+        for r_ in db.get_review_queue(limit=20):
+            print(f"{r_['priority']:.2f} {r_['item_type']:<16} r{r_['round']} t{r_['tick']} "
+                  f"pred={r_['model_prediction']} conf={r_['model_confidence']}")
+    elif args.cmd == "annotations":
+        from .db import DB
+        from .annotation import annotation_stats, export_annotations
+        db = DB(cfg.db_path)
+        if args.action == "stats":
+            print(json.dumps(annotation_stats(db), ensure_ascii=False, indent=1, default=str))
+        else:
+            out = args.out or os.path.join(os.path.dirname(cfg.db_path), "..", "backtest",
+                                           "annotations.jsonl")
+            print(f"written: {export_annotations(db, os.path.abspath(out))}")
     elif args.cmd == "batch":
         from .batch import run_batch, summarize, write_report
         results = run_batch(cfg, args.paths, recursive=not args.no_recursive,
@@ -180,6 +237,32 @@ def _cmd_ingest(cfg: Config, demo_path: str, steamid: int | None):
         print(f"  r{d['round']:>2} t{d['decision_tick']:>6} {d['observed_action']:<10} "
               f"{d['player_name'][:12]:<12} {d['zone']:<8} surv={o.get('survival')} "
               f"duel={o.get('duel_result')}")
+
+
+def _cmd_alpha(cfg: Config, demo_path: str):
+    from .db import DB
+    from .ingest import parse_demo, persist
+    from .decision import analyze_match
+    from .alpha import run_alpha
+
+    demo_path = os.path.abspath(demo_path)
+    if not os.path.isfile(demo_path):
+        print(f"demo not found: {demo_path}")
+        sys.exit(1)
+    db = DB(cfg.db_path)
+    print(f"parsing {demo_path} ...")
+    demo = parse_demo(demo_path, cfg)
+    persist(demo, cfg, db)
+    analyze_match(demo, cfg, db)
+    res = run_alpha(demo, cfg, db)
+    print(f"alpha samples: {res['samples']}")
+    for p in res["patterns"]:
+        print(f"  pattern {p['pattern_type']:<12} n={p['sample_count']:>3} "
+              f"rate={p['violation_rate']:.3f} conf={p['confidence']:.2f} "
+              f"cf={p['counterfactual_support']}")
+    print(f"bottlenecks: {[{'type': b['pattern_type'], 'level': b['level'], 'eligible': b['eligible']} for b in res['bottlenecks']]}")
+    print(f"targets: {[t['name'] for t in res['targets']]}")
+    print(f"review items: {res['review_items']}")
 
 
 if __name__ == "__main__":

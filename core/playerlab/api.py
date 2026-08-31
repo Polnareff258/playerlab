@@ -88,6 +88,71 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                      "outcome": db.get_outcome(dp_id)})
                 elif path == "/api/coverage":
                     _json(self, {"coverage": db.get_coverage()})
+                elif path == "/api/focus":
+                    from .training import active_focus
+                    _json(self, {"focus": active_focus(db)})
+                elif path == "/api/patterns":
+                    _json(self, {"patterns": db.get_patterns()})
+                elif path == "/api/bottlenecks":
+                    from .bottleneck import rank_bottlenecks
+                    _json(self, {"bottlenecks": rank_bottlenecks(db, cfg, len(db.list_matches()))})
+                elif path == "/api/targets":
+                    _json(self, {"targets": db.get_targets()})
+                elif path.startswith("/api/targets/"):
+                    tid = path[len("/api/targets/"):]
+                    t = db.get_target(tid)
+                    if not t:
+                        return _json(self, {"error": "target not found"}, 404)
+                    _json(self, {"target": t,
+                                 "measurements": db.get_measurements(tid),
+                                 "history": db.get_target_history(tid)})
+                elif path == "/api/review":
+                    _json(self, {"review": db.get_review_queue(limit=30)})
+                elif path == "/api/annotations/stats":
+                    from .annotation import annotation_stats
+                    _json(self, annotation_stats(db))
+                else:
+                    _json(self, {"error": "not found"}, 404)
+            except Exception as e:  # noqa: BLE001
+                _json(self, {"error": f"{type(e).__name__}: {e}"}, 500)
+            finally:
+                db.close()
+
+        def do_POST(self):
+            import json as _json_mod
+            db = DB(db_path)
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length).decode("utf-8") if length else "{}"
+                body = _json_mod.loads(raw or "{}")
+                path = self.path
+                if path.startswith("/api/review/") and path.endswith("/annotation"):
+                    rid = path[len("/api/review/"):-len("/annotation")]
+                    from .annotation import submit_annotation
+                    ann = submit_annotation(
+                        db, rid, body.get("annotation_type", "decision_quality"),
+                        body.get("model_prediction"), body.get("model_confidence"),
+                        body.get("human_label", ""),
+                        float(body.get("human_confidence", 0.7)),
+                        body.get("reason_code", "OTHER"),
+                        body.get("optional_comment", ""))
+                    _json(self, {"annotation": ann})
+                elif path.startswith("/api/review/") and path.endswith("/preference"):
+                    rid = path[len("/api/review/"):-len("/preference")]
+                    item = next((r for r in db.get_review_queue(status="pending", limit=1000)
+                                 if r["id"] == rid), None)
+                    from .annotation import submit_preference
+                    rec = submit_preference(
+                        db, item["match_id"] if item else body.get("match_id", ""),
+                        item["round"] if item else int(body.get("round", 0)),
+                        item["tick"] if item else int(body.get("tick", 0)),
+                        item.get("event_id", "") if item else body.get("event_id", ""),
+                        body.get("candidates", []), body.get("human_choice", ""),
+                        float(body.get("human_confidence", 0.6)),
+                        body.get("reason_code", "OTHER"))
+                    if item:
+                        db.mark_review_done(rid)
+                    _json(self, {"preference": rec})
                 else:
                     _json(self, {"error": "not found"}, 404)
             except Exception as e:  # noqa: BLE001

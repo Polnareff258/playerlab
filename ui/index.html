@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PlayerLab V1 — Counterfactual CS2 Decision Intelligence</title>
+<title>PlayerLab V1.1-alpha — Improvement + Annotation Loop</title>
 <style>
   :root { --bg:#0d1117; --panel:#161b22; --panel2:#1c2430; --border:#2d3748;
           --text:#d7dde6; --muted:#8b98a9; --accent:#4da3ff; --ok:#3fb950;
@@ -11,36 +11,48 @@
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
          font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif; }
-  header { display:flex; align-items:baseline; gap:14px; padding:14px 22px;
+  header { display:flex; align-items:baseline; gap:18px; padding:12px 22px;
            border-bottom:1px solid var(--border); background:var(--panel); }
-  header h1 { font-size:17px; margin:0; }
+  header h1 { font-size:16px; margin:0; }
   header span { color:var(--muted); font-size:12px; }
-  #app { padding:20px 22px; max-width:1200px; margin:0 auto; }
+  nav { display:flex; gap:6px; }
+  nav button { background:transparent; color:var(--muted); border:1px solid transparent;
+               border-radius:6px; padding:5px 12px; cursor:pointer; font-size:13px; }
+  nav button.on { color:var(--text); border-color:var(--border); background:var(--panel2); }
+  #app { padding:18px 22px; max-width:1150px; margin:0 auto; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px;
           padding:14px 16px; margin-bottom:14px; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   h2 { font-size:15px; margin:2px 0 10px; }
-  h3 { font-size:13px; margin:14px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px;}
+  h3 { font-size:12px; margin:12px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px;}
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
   th { color:var(--muted); font-weight:500; font-size:12px; }
   tr.click { cursor:pointer; } tr.click:hover td { background:var(--panel2); }
   .btn { background:var(--panel2); color:var(--text); border:1px solid var(--border);
-         border-radius:6px; padding:6px 12px; cursor:pointer; font-size:13px; }
+         border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; }
   .btn:hover { border-color:var(--accent); }
   .chip { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px;
           border:1px solid var(--border); }
-  .chip.peek{color:#7ee787}.chip.hold{color:#d2a8ff}.chip.re_peek{color:#ffa657}
-  .chip.disengage{color:#79c0ff}.chip.fallback{color:#ffdcd7}
-  .chip.death{color:var(--bad);border-color:var(--bad)}
-  .chip.survive{color:var(--ok);border-color:var(--ok)}
+  .chip.HIGH,.chip.ok{color:var(--ok);border-color:var(--ok)}
+  .chip.MEDIUM,.chip.warn{color:var(--warn);border-color:var(--warn)}
+  .chip.LOW,.chip.bad{color:var(--bad);border-color:var(--bad)}
   .mono { font-family:var(--mono); font-size:12px; }
   .muted { color:var(--muted); }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  .stat b { font-size:20px; } .stat small { color:var(--muted); }
+  .stat b { font-size:22px; } .stat small { color:var(--muted); }
+  .bar { height:8px; background:var(--panel2); border-radius:4px; overflow:hidden; margin-top:4px; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  .cue { border-left:3px solid var(--accent); padding-left:10px; margin:6px 0;
+         font-size:13px; color:var(--text); }
+  .cue b { color:var(--accent); }
   pre { background:#0b0f14; border:1px solid var(--border); border-radius:6px;
-        padding:10px; overflow:auto; font:12px/1.5 var(--mono); max-height:320px; }
-  .badge-ok{color:var(--ok)} .badge-warn{color:var(--warn)} .badge-bad{color:var(--bad)}
+        padding:10px; overflow:auto; font:12px/1.5 var(--mono); max-height:300px; }
+  .rev { border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:10px;
+         background:var(--panel2); }
+  .rev .why { font-size:12px; color:var(--muted); margin:6px 0; }
+  input,textarea,select { background:var(--panel); color:var(--text); border:1px solid var(--border);
+         border-radius:6px; padding:5px 8px; font-size:12px; }
   #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
            background:var(--panel2); border:1px solid var(--border); padding:8px 16px;
            border-radius:8px; display:none; }
@@ -48,201 +60,158 @@
 </head>
 <body>
 <header>
-  <h1>PlayerLab <span>V1</span></h1>
-  <span>Counterfactual CS2 Decision Intelligence · local-first</span>
-  <span id="crumbs" class="muted"></span>
+  <h1>PlayerLab <span>V1.1-alpha</span></h1>
+  <span>Improvement Loop + Human Annotation Loop</span>
+  <nav>
+    <button id="tab-focus" class="on" onclick="goto('focus')">Focus</button>
+    <button id="tab-matches" onclick="goto('matches')">Matches</button>
+    <button id="tab-review" onclick="goto('review')">Review</button>
+  </nav>
 </header>
-<div id="app"><div class="card"><span class="muted">loading…</span></div></div>
+<div id="app"></div>
 <div id="toast"></div>
 <script>
 "use strict";
-const $ = (sel) => document.querySelector(sel);
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const chip = (txt, cls="") => `<span class="chip ${cls}">${esc(txt)}</span>`;
-const actionCls = (a) => (a||"").toLowerCase().replace("_","_");
-
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct = x => x==null ? "—" : (x*100).toFixed(0)+"%";
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.json()).error || r.status);
-  return r.json();
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
 }
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.style.display="block"; setTimeout(()=>t.style.display="none", 2600); }
-function crumb(p) { $("#crumbs").textContent = p || ""; }
+function toast(m){ const t=$("#toast"); t.textContent=m; t.style.display="block"; setTimeout(()=>t.style.display="none",2600); }
+function setTab(t){ ["focus","matches","review"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
 
-async function load() {
-  const hash = location.hash || "#/";
-  const [_, page, a, b] = hash.split("/");
-  if (page === "match") return renderMatch(a);
-  if (page === "dp") return renderDp(a);
-  return renderHome();
-}
-
-/* ---------------- Home / Match list ---------------- */
-async function renderHome() {
-  crumb("Match View");
-  const { matches } = await api("/api/matches");
-  const { coverage } = await api("/api/coverage");
-  const covByCell = {};
-  coverage.forEach(c => covByCell[`${c.map}/${c.side}/${c.zone}`] = (covByCell[`${c.map}/${c.side}/${c.zone}`]||0) + c.n);
-  $("#app").innerHTML = `
-    <div class="card"><h2>Demo 库</h2>
-      ${matches.length ? `<table><tr><th>Match</th><th>Map</th><th>Rounds</th><th>Players</th><th>解析时间</th></tr>` +
-        matches.map(m => `<tr class="click" onclick="location.hash='#/match/${m.demo_id}'">
-          <td class="mono">${esc(m.demo_id)}</td><td>${esc(m.map_name)}</td>
-          <td>${m.rounds_total}</td><td>${m.player_count}</td><td class="muted">${esc(m.parsed_at)}</td></tr>`).join("") + `</table>`
-        : `<span class="muted">还没有 demo，请先运行: python3 -m playerlab.cli ingest &lt;demo.dem&gt;</span>`}
-    </div>
-    <div class="card"><h2>Similar-state 覆盖报告</h2>
-      ${coverage.length ? `<table><tr><th>map/side/zone</th><th>DP 数</th></tr>` +
-        Object.entries(covByCell).sort((x,y)=>y[1]-x[1]).map(([k,n]) =>
-          `<tr><td class="mono">${esc(k)}</td><td>${n}${n < 10 ? " " + chip("thin","warn") : ""}</td></tr>`).join("") + `</table>`
-        : `<span class="muted">无数据</span>`}
-    </div>`;
+async function goto(t){
+  setTab(t);
+  const el=$("#app"); el.innerHTML=`<span class="muted">loading…</span>`;
+  try {
+    if (t==="focus") return renderFocus(el);
+    if (t==="matches") return renderMatches(el);
+    return renderReview(el);
+  } catch(e){ el.innerHTML=`<span style="color:var(--bad)">${esc(e.message)}</span>`; }
 }
 
-/* ---------------- Match detail ---------------- */
-async function renderMatch(mid) {
-  crumb("Match View");
-  const d = await api(`/api/matches/${mid}`);
-  const dpByRound = {};
-  d.decision_points.forEach(dp => (dpByRound[dp.round] = dpByRound[dp.round]||[]).push(dp));
-  $("#app").innerHTML = `
-    <div class="card"><h2>Match ${esc(d.match.map_name)} · ${d.match.rounds_total} rounds</h2>
-      <span class="muted mono">${esc(d.match.demo_id)}</span> ·
-      <span class="row">
-        ${d.players.map(p => `<span class="chip">${esc(p.name)} ${p.team_number===2?"T":"CT"}</span>`).join("")}
-      </span>
-      <h3>Rounds & Decision Points</h3>
-      <table><tr><th>R</th><th>Winner</th><th>Decision Points</th></tr>
-      ${d.rounds.map(r => `<tr>
-        <td>${r.round}</td><td>${chip(r.winner)}</td>
-        <td>${(dpByRound[r.round]||[]).map(dp =>
-          `<span class="chip ${actionCls(dp.observed_action)}">${esc(dp.observed_action)}</span> ` +
-          `<a class="muted" href="#/dp/${dp.dp_id}">${esc(dp.player_name)}·${esc(dp.zone)}·t${dp.decision_tick}</a>`
-        ).join("<br>") || `<span class="muted">—</span>`}</td></tr>`).join("")}
+/* ---------------- Focus (CURRENT FOCUS 首页) ---------------- */
+async function renderFocus(el){
+  const { focus } = await api("/api/focus");
+  const { bottlenecks } = await api("/api/bottlenecks");
+  const { patterns } = await api("/api/patterns");
+  let html = `<h2>CURRENT FOCUS</h2>`;
+  if (!focus.length){
+    html += `<div class="card"><span class="muted">暂无 ACTIVE TrainingTarget。
+      运行: python3 -m playerlab.cli alpha &lt;demo.dem&gt; 后生成；或历史样本不足时返回 INSUFFICIENT_EVIDENCE。</span></div>`;
+  }
+  for (const t of focus){
+    const cur = t.progress ?? 0;
+    const cue = t.next_match_cue || {};
+    html += `<div class="card">
+      <div class="row"><span class="chip">${esc(t.status)}</span><span class="chip ${esc(t.category==="Macro Decision"?"MEDIUM":"ok")}">${esc(t.category)}</span>
+        <b>${esc(t.name)}</b><span class="muted">conf=${t.confidence}</span></div>
+      <div class="row stat" style="margin-top:8px">
+        <span>Baseline <b>${pct(t.baseline)}</b></span>
+        <span>Current <b>${pct(t.baseline*(1-cur))}</b></span>
+        <span>Goal <b>${pct(t.goal)}</b></span>
+        <span>Progress <b>${(cur*100).toFixed(0)}%</b></span>
+      </div>
+      <div class="bar"><i style="width:${Math.min(100, cur*100)}%"></i></div>
+      <div class="cue"><b>WHEN</b> ${esc(cue.when||t.trigger||"")}<br>
+        <b>DO</b> ${esc(cue.do||t.replacement_behavior||"")}<br>
+        <b>AVOID</b> ${esc(cue.avoid||t.undesired_behavior||"")}</div>
+      <h3>Why this target?</h3>
+      <table><tr><th>Frequency</th><th>Impact</th><th>Confidence</th><th>Trainability</th><th>Level</th></tr>
+      ${bottlenecks.filter(b=>b.pattern_type===t.pattern_type).map(b=>`<tr>
+        <td>${b.frequency}</td><td>${b.impact}</td><td>${b.confidence}</td>
+        <td>${b.trainability}</td><td><span class="chip ${b.level}">${b.level}</span></td></tr>`).join("")||"<tr><td colspan=5 class=muted>—</td></tr>"}
       </table>
-    </div>`;
-}
-
-/* ---------------- DP detail: Decision Review + What If ---------------- */
-async function renderDp(dpId) {
-  crumb("Decision Review");
-  const d = await api(`/api/dps/${dpId}`);
-  const dp = d.decision_point, st = d.state, oc = d.outcome || {};
-  const resCls = oc.survival === 0 ? "death" : "survive";
-  const resTxt = oc.survival === 0 ? "DEATH" : oc.survival === 1 ? "SURVIVED" : "?";
-  const timeLeft = st?.public_info?.time_remaining_s;
-  $("#app").innerHTML = `
-    <div class="card">
-      <div class="row">
-        <h2 style="margin:0">Round ${dp.round} · ${st?.side || "?"} · ${timeLeft}s</h2>
-        ${chip(dp.observed_action, actionCls(dp.observed_action))}
-        ${chip(resTxt, resCls)}
+      <div class="muted mono" style="font-size:11px;margin-top:6px">
+        ${patterns.filter(p=>p.pattern_type===t.pattern_type).map(p=>
+          `pattern: n=${p.sample_count} rate=${p.violation_rate} cf=${p.counterfactual_support}`).join(" · ")}
       </div>
-      <p class="muted">Location: <b>${esc(dp.zone)}</b> (${esc(dp.place)}) · ${esc(dp.player_name)} ·
-        tick ${dp.decision_tick} · confidence ${dp.confidence}</p>
-      <p class="muted">备选动作: ${(dp.alternatives||[]).map(a=>chip(a, actionCls(a))).join(" ")}</p>
-      <div class="row">
-        <button class="btn" onclick="loadWhatIf('${dp.dp_id}')">What If? 历史对比</button>
-        <button class="btn" onclick="loadSimilar('${dp.dp_id}')">Show Similar Rounds</button>
-        <button class="btn" onclick="loadEvidence('${dp.dp_id}')">Show Evidence</button>
-        <button class="btn" onclick="loadState('${dp.dp_id}')">当时可知状态</button>
-        <button class="btn" onclick="loadGroundTruth('${dp.dp_id}')">Ground Truth</button>
-        <label class="muted" style="font-size:12px"><input type="checkbox" id="samebox"> 包含本场样本（单场演示；正式检索跨场）</label>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" onclick="feedback('${t.target_id}','YES')">这符合我的情况 YES</button>
+        <button class="btn" onclick="feedback('${t.target_id}','PARTIALLY')">PARTIALLY</button>
+        <button class="btn" onclick="feedback('${t.target_id}','NO')">NO</button>
       </div>
-      <div id="panels"></div>
     </div>`;
-  loadWhatIf(dpId);
+  }
+  const other = bottlenecks.filter(b=>!b.eligible);
+  if (other.length) html += `<div class="card"><h3>未达门槛的模式（不生成目标）</h3>` +
+    other.map(b=>`<div class="muted mono">${esc(b.pattern_type)}: 样本不足或置信过低 → INSUFFICIENT_EVIDENCE</div>`).join("") + `</div>`;
+  el.innerHTML = html;
 }
-
-function sameParam() { return (document.getElementById("samebox")||{}).checked ? "&same=1" : ""; }
-
-function whatIfHtml(r) {
-  if (!r) return "";
-  const vCls = r.verdict === "COMPARISON_AVAILABLE" ? "badge-ok"
-             : r.verdict === "INSUFFICIENT_EVIDENCE" ? "badge-bad" : "badge-warn";
-  const rows = Object.entries(r.actions || {}).map(([a, s]) => `
-    <tr><td>${chip(a, actionCls(a))}</td>
-        <td><b>${s.n}</b></td>
-        <td>${(s.survival*100).toFixed(0)}% <small class="muted">[${(s.survival_ci[0]*100).toFixed(0)}–${(s.survival_ci[1]*100).toFixed(0)}]</small></td>
-        <td>${(s.round_win*100).toFixed(0)}% <small class="muted">[${(s.round_win_ci[0]*100).toFixed(0)}–${(s.round_win_ci[1]*100).toFixed(0)}]</small></td>
-        <td>W${s.duel.won} L${s.duel.lost} U${s.duel.undefined}</td>
-        <td class="muted">${s.verdict || ""}</td></tr>`).join("");
-  const comps = (r.comparisons||[]).map(c =>
-    `<div class="row"><span>${chip(c.observed, actionCls(c.observed))} vs ${chip(c.alternative, actionCls(c.alternative))}</span>
-     <span class="muted">survival ${(c.survival_obs*100).toFixed(0)}% → ${(c.survival_alt*100).toFixed(0)}%</span>
-     ${c.ci_overlap ? chip("NO_RELIABLE_DIFFERENCE","warn") : chip("difference","ok")}</div>`).join("") ||
-    `<span class="muted">无足够样本对比</span>`;
-  const e = r.evidence_strength || {};
-  return `<h3>What If? <span class="badge ${vCls}">${esc(r.verdict)}</span> · confidence ${e.confidence}</h3>
-    <table><tr><th>Action</th><th>n</th><th>Survival (CI)</th><th>Round Win (CI)</th><th>Duel</th><th></th></tr>
-    ${rows || `<tr><td colspan=6 class="muted">无相似状态</td></tr>`}</table>
-    <h3>对比</h3>${comps}
-    <h3>Evidence Strength</h3>
-    <div class="muted mono">n_similar=${e.n_similar_states} high_sim=${e.high_similarity_n}
-      sim_mean=${e.similarity_distribution?.mean} · confounders: ${(e.confounders||[]).join(", ")}
-      <br>missing: ${(e.missing_information||[]).join("; ") || "none"}</div>`;
-}
-
-async function loadWhatIf(dpId) {
-  const el = $("#panels"); if (!el) return;
-  el.innerHTML = `<span class="muted">计算中…</span>`;
+async function feedback(targetId, label){
   try {
-    const r = await api(`/api/dps/${dpId}/what-if?k=50${sameParam()}`);
-    el.innerHTML = whatIfHtml(r);
-  } catch (err) { el.innerHTML = `<span class="badge-bad">${esc(err.message)}</span>`; }
+    await api("/api/review/null/annotation", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({annotation_type:"target_feedback", human_label:label, reason_code:"OTHER",
+        match_id:"", round:0, tick:0, event_id:"", dp_id:targetId})});
+    toast("反馈已保存（HumanAnnotation）");
+  } catch(e){ toast(e.message); }
 }
 
-async function loadSimilar(dpId) {
-  const el = $("#panels"); if (!el) return;
-  el.innerHTML = `<span class="muted">检索中…</span>`;
+/* ---------------- Matches ---------------- */
+async function renderMatches(el){
+  const { matches } = await api("/api/matches");
+  let html = `<h2>Demo 库</h2><div class="card">` +
+    (matches.length ? `<table><tr><th>Match</th><th>Map</th><th>Rounds</th><th>解析时间</th></tr>` +
+      matches.map(m=>`<tr class="click" onclick="location.hash='#/match/${m.demo_id}'">
+        <td class="mono">${esc(m.demo_id)}</td><td>${esc(m.map_name)}</td>
+        <td>${m.rounds_total}</td><td class="muted">${esc(m.parsed_at)}</td></tr>`).join("") + `</table>`
+      : `<span class="muted">还没有 demo：python3 -m playerlab.cli alpha &lt;demo.dem&gt;</span>`) + `</div>`;
+  el.innerHTML = html;
+}
+
+/* ---------------- Review (人工标注) ---------------- */
+async function renderReview(el){
+  const { review } = await api("/api/review");
+  let html = `<h2>Review Queue <span class="muted">(每场 3–5 条，低置信高影响优先)</span></h2>`;
+  if (!review.length) html += `<div class="card"><span class="muted">暂无待审样本（标注会写入 HumanAnnotation，预测与纠正分离保存）</span></div>`;
+  for (const it of review){
+    html += `<div class="rev">
+      <div class="row"><span class="chip">${esc(it.item_type)}</span>
+        <span class="mono muted">r${it.round} t${it.tick}</span>
+        <span class="mono muted">${esc(it.match_id.slice(0,8))}…</span>
+        <span class="muted">priority ${it.priority}</span></div>
+      <div class="why">System: <b>${esc(it.model_prediction)}</b> · confidence ${it.model_confidence} ·
+        ${esc(it.rationale)}</div>
+      <div class="row">
+        <span class="muted" style="font-size:12px">Does this look right?</span>
+        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">Correct</button>
+        <button class="btn" onclick="annotate('${it.id}','PARTIALLY_CORRECT','')">Partially</button>
+        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">Incorrect</button>
+        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">Unsure</button>
+        <select id="rc-${it.id}" style="max-width:180px">
+          ${["OTHER","TEAM_CALL","MISSING_AUDIO","MISSING_VISUAL_CONTEXT","WRONG_TIMING",
+             "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option>${c}</option>`).join("")}
+        </select>
+        <input id="cm-${it.id}" placeholder="备注（可选）" style="max-width:180px">
+      </div>
+    </div>`;
+  }
+  const stats = await api("/api/annotations/stats").catch(()=>({}));
+  if (stats.total) html += `<div class="card"><h3>Annotation Stats</h3><pre>${esc(JSON.stringify(stats,null,1))}</pre></div>`;
+  el.innerHTML = html;
+}
+async function annotate(reviewId, label){
   try {
-    const r = await api(`/api/dps/${dpId}/similar-rounds?action=any&k=10${sameParam()}`);
-    el.innerHTML = `<h3>Similar States (top ${r.similar.length})</h3><table>
-      <tr><th>Action</th><th>Score</th><th>Match</th><th>Round</th><th>Tick</th></tr>` +
-      r.similar.map(c => `<tr><td>${chip(c.action, actionCls(c.action))}</td><td><b>${c.score}</b></td>
-        <td class="mono">${esc(c.match_id.slice(0,8))}…</td><td>${c.round}</td><td class="mono">${c.tick}</td></tr>`).join("") +
-      `</table>`;
-  } catch (err) { el.innerHTML = `<span class="badge-bad">${esc(err.message)}</span>`; }
+    const rc = $("#rc-"+reviewId)?.value || "OTHER";
+    const cm = $("#cm-"+reviewId)?.value || "";
+    await api("/api/review/"+reviewId+"/annotation", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({annotation_type:"behavior_detection", human_label:label,
+                            human_confidence:0.8, reason_code:rc, optional_comment:cm})});
+    toast("标注已保存"); goto("review");
+  } catch(e){ toast(e.message); }
 }
 
-async function loadEvidence(dpId) {
-  const d = await api(`/api/dps/${dpId}`);
-  const dp = d.decision_point;
-  const items = (dp.evidence?.events||[]).map(e =>
-    `<div class="mono">t${e.tick} · ${esc(e.type)} · ${esc(e.kind||e.victim||"")} ${esc(e.weapon||"")} dmg=${e.dmg_health ?? ""} dist=${e.distance ?? ""}</div>`).join("");
-  const el = $("#panels");
-  el.innerHTML = `<h3>Evidence（可追溯）</h3>
-    <div class="mono muted">ticks: [${dp.start_tick}, ${dp.decision_tick}, ${dp.end_tick}] · sources: ${(dp.evidence?.sources||[]).join(", ")}</div>
-    ${items || `<span class="muted">无事件证据</span>`}`;
-}
-
-async function loadState(dpId) {
-  const d = await api(`/api/dps/${dpId}`);
-  const k = d.state?.known_state || {};
-  const lines = Object.entries(k.last_seen_enemies||{}).map(([e,v]) =>
-    `<div class="mono">enemy ${e.slice(-6)} @ ${v.pos ? v.pos.map(x=>Math.round(x)).join(",") : "?"} · t${v.tick} · ${esc(v.source)}</div>`).join("");
-  const heard = (k.heard||[]).slice(-6).map(h =>
-    `<div class="mono">heard ${esc(h.type)} ${h.weapon||h.kind||""} @ t${h.tick}</div>`).join("");
-  const el = $("#panels");
-  el.innerHTML = `<h3>PlayerKnownState（决策层唯一可用信息）</h3>
-    <div class="mono">own: hp=${k.own?.hp} money=${k.own?.money} weapon=${esc(k.own?.weapon_class)}</div>
-    <div class="mono">n_known_enemies=${k.n_known_enemies} nearest=${Math.round(k.nearest_known_enemy||0)}u spread=${Math.round(k.known_spread||0)}u</div>
-    ${lines || `<div class="muted">无已知敌方位置</div>`}
-    <h3>声音线索</h3>${heard || `<div class="muted">无</div>`}`;
-}
-
-async function loadGroundTruth(dpId) {
-  const d = await api(`/api/dps/${dpId}`);
-  const g = d.state?.ground_truth || {};
-  const lines = (g.enemies||[]).map(e =>
-    `<div class="mono">${esc(e.name)} ${e.alive?"":"(dead)"} hp=${e.hp} @ ${e.pos ? e.pos.map(x=>Math.round(x)).join(",") : "?"} · ${esc(e.place)}</div>`).join("");
-  const el = $("#panels");
-  el.innerHTML = `<h3>GroundTruthState（仅 outcome/replay/debug；决策分析不使用）</h3>${lines}`;
-}
-
-window.addEventListener("hashchange", () => load().catch(e => toast(e.message)));
-load().catch(e => toast(e.message));
+window.addEventListener("hashchange", () => {
+  const h = location.hash;
+  if (h.startsWith("#/match")) return renderMatches($("#app"));
+  goto(h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
+});
+goto("focus");
 </script>
 </body>
 </html>

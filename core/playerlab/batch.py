@@ -62,6 +62,9 @@ def analyze_one(demo_path: str, cfg: Config, db: DB, force: bool) -> dict:
         acts = Counter(d["observed_action"] for d in dps)
         base.update(status="ingested", dps_count=len(dps),
                     actions={k: v for k, v in sorted(acts.items())})
+        from .alpha import run_alpha
+        alpha = run_alpha(demo, cfg, db)
+        base["alpha"] = {"samples": alpha["samples"], "review_items": alpha["review_items"]}
     except BaseException as e:  # noqa: BLE001  per-demo isolation; pyo3 Rust
         # panics surface as PanicException (BaseException, not Exception)
         if isinstance(e, (KeyboardInterrupt, SystemExit)):

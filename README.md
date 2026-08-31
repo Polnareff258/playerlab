@@ -44,6 +44,18 @@ PlayerLab 不通过重复实现 mechanics dashboard 制造差异，只消费现�
 
 **V1.1 定位**：不是加更多复盘指标，而是闭环 PLAY → OBSERVE → DIAGNOSE → TRAINING TARGET → VALIDATE —— 一次只改 1–2 个行为，后续 Demo 自动验证行为是否真正改善。Phase 6 完成后**暂停等待确认**。
 
+### V1.1-alpha — 已实现（Improvement Loop + Human Annotation Loop）
+
+3 个 pattern 检测器（Immediate Same-Angle Re-peek / Move-and-Shoot+Couter-Strafe / Advantage Overaggression）+ TrainingTarget（Active Focus ≤2、三通道验证）+ 人工标注闭环（HumanAnnotation / PreferenceAnnotation / ReviewQueue / JSONL 导出 / 统计）+ 黄金样本。详见 [docs/ALPHA_RESULTS.md](docs/ALPHA_RESULTS.md)。
+
+```powershell
+python3 -m playerlab.cli alpha "path\demo.dem"        # 全管线（ingest + 3 pattern + 目标 + review）
+python3 -m playerlab.cli patterns | focus | targets | review
+python3 -m playerlab.cli target-validate
+python3 -m playerlab.cli annotations stats | annotations export --out ..\backtest\ann.jsonl
+python3 -m playerlab.cli api --port 8125               # UI：首页 = CURRENT FOCUS；Review 卡可标注
+```
+
 ## 阶段状态
 
 - [x] 阶段 1：现有项目研究 → EXISTING_PROJECTS.md
