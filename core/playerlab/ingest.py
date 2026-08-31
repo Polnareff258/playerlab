@@ -30,6 +30,11 @@ EVENT_NAMES = {
 SITE_CODE = {97: "A", 98: "B"}
 
 
+def demo_id_for(demo_path: str) -> str:
+    """Stable demo id derived from the absolute path (batch skip uses it)."""
+    return hashlib.sha256(os.path.abspath(demo_path).encode("utf-8")).hexdigest()[:16]
+
+
 def clean(v):
     """Convert pandas/NaN values to JSON-safe primitives."""
     if v is None:
@@ -245,7 +250,7 @@ def parse_demo(demo_path: str, cfg: Config | None = None) -> IngestedDemo:
     # ticks over the played range only
     start = min(r["start_tick"] for r in rounds) - 1
     end = max(r["end_tick"] for r in rounds) + 1
-    demo_id = hashlib.sha256(os.path.abspath(demo_path).encode("utf-8")).hexdigest()[:16]
+    demo_id = demo_id_for(demo_path)
 
     cache_path = _ticks_cache_path(demo_id, cfg) if cfg else ""
     if cache_path and os.path.isfile(cache_path):

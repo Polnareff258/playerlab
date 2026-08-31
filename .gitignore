@@ -8,6 +8,7 @@ spike/probe2_out.json
 __pycache__/
 *.pyc
 *.pyo
+tests/.tmp_*/
 
 # ---- node (spike npm scratch) ----
 spike/node_modules/

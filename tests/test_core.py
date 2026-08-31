@@ -173,6 +173,72 @@ def test_counterfactual_no_alternative():
     assert res["actions"]["PEEK"]["n"] >= cfg.n_min_action
 
 
+# ---------------- batch module tests ----------------
+
+def _make_demo_dir():
+    import time as _time
+    tmp_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp_batch")
+    os.makedirs(tmp_root, exist_ok=True)
+    d = os.path.join(tmp_root, "batch_%d" % _time.time_ns())
+    os.makedirs(d)  # NOTE: use os.makedirs, not tempfile.mkdtemp (sandbox)
+    for name in ("a.dem", "b.dem"):
+        with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+            fh.write("not a real demo - parse must fail fast")
+    sub = os.path.join(d, "nested")
+    os.makedirs(sub)
+    with open(os.path.join(sub, "c.dem"), "w", encoding="utf-8") as fh:
+        fh.write("not a real demo")
+    with open(os.path.join(d, "notes.txt"), "w", encoding="utf-8") as fh:
+        fh.write("ignore me")
+    return d
+
+
+def test_batch_discover():
+    from playerlab.batch import discover
+    d = _make_demo_dir()
+    rec = discover([d], recursive=True)
+    assert len(rec) == 3 and all(f.endswith(".dem") for f in rec)
+    flat = discover([d], recursive=False)
+    assert len(flat) == 2  # nested excluded
+    single = discover([os.path.join(d, "a.dem")])
+    assert single == [os.path.join(d, "a.dem")]
+
+
+def test_batch_dry_run_and_failure_tolerance():
+    from playerlab.batch import run_batch, summarize
+    d = _make_demo_dir()
+    cfg = Config()
+    cfg.data_dir = os.path.join(d, "data")
+    res = run_batch(cfg, [d], dry_run=True, verbose=False)
+    assert {r["status"] for r in res} == {"would_ingest"}
+    res2 = run_batch(cfg, [d], verbose=False)
+    assert len(res2) == 3
+    assert all(r["status"] == "failed" for r in res2)
+    assert all("error" in r for r in res2)
+    rep = summarize(res2)
+    assert rep["failed"] == 3 and rep["total"] == 3
+
+
+def test_batch_skip_existing():
+    from playerlab.batch import run_batch
+    from playerlab.ingest import demo_id_for
+    from playerlab.db import DB
+    d = _make_demo_dir()
+    cfg = Config()
+    cfg.data_dir = os.path.join(d, "data")
+    db = DB(cfg.db_path)
+    demo = os.path.join(d, "a.dem")
+    demo_id = demo_id_for(demo)
+    db.upsert_match({"demo_id": demo_id, "demo_path": demo, "map_name": "de_dust2",
+                     "tickrate": 64, "player_count": 10, "rounds_total": 3,
+                     "side_swap_round": None, "parsed_at": "2026-01-01",
+                     "parser_version": "test"})
+    res = run_batch(cfg, [demo], skip_existing=True, verbose=False)
+    assert res[0]["status"] == "skipped" and res[0]["reason"] == "already_ingested"
+    res2 = run_batch(cfg, [demo], force=True, verbose=False)
+    assert res2[0]["status"] == "failed"  # bogus file, but force bypassed the skip
+
+
 if __name__ == "__main__":
     import traceback
     failed = 0

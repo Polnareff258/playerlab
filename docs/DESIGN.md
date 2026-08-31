@@ -56,8 +56,9 @@ playerlab/
 │   │   └── verdicts.py          #   INSUFFICIENT_EVIDENCE / NO_COMPARABLE_ALTERNATIVE …
 │   ├── stats/                   # Wilson CI / 校准 / Brier / bootstrap
 │   ├── db/                      # SQLite schema + repositories
-│   ├── api/                     # FastAPI 只读查询
-│   └── backtest/                # holdout / QA 导出 / ablation 跑批
+│   ├── api/                     # 本地只读 JSON API（stdlib http.server）
+│   ├── backtest/                # holdout / QA 导出 / ablation 跑批
+│   └── batch.py                 # 批量 demo 分析（发现/幂等跳过/失败隔离/报告）
 ├── ui/                          # React + TS（本地 Web）
 │   └── src/views/               # MatchView / DecisionReview / WhatIf / EvidencePanel
 ├── schema/                      # canonical JSON schema（cs2-demo-format 对齐 + plab 扩展）

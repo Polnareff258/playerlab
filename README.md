@@ -62,6 +62,9 @@ PlayerLab 不通过重复实现 mechanics dashboard 制造差异，只消费现�
 ```powershell
 cd playerlab\core
 python3 -m playerlab.cli ingest "C:\path\to\demo.dem"   # 解析 + 检测 DP + 入库
+python3 -m playerlab.cli batch "D:\demos"               # 批量分析目录（递归，幂等跳过已入库）
+python3 -m playerlab.cli batch "D:\demos" --dry-run     # 只列出将分析的 demo
+python3 -m playerlab.cli batch "D:\demos" --force --report ..\backtest\batch.json  # 强制重分析+报告
 python3 -m playerlab.cli list                            # 匹配列表
 python3 -m playerlab.cli dps <demo_id>                   # DP 列表
 python3 -m playerlab.cli dp <dp_id>                      # DP 详情（JSON）
@@ -73,6 +76,15 @@ python3 -m playerlab.cli ablation                        # 特征消融
 python3 -m playerlab.cli api --port 8123                 # 本地 UI + API
 # 浏览器打开 http://127.0.0.1:8123
 ```
+
+### 批量分析模块（`core/playerlab/batch.py`）
+
+独立子命令 `batch`，用于一次性消化整个 demo 目录：
+- **发现**：目录递归收集 `*.dem`（`--no-recursive` 关递归；也可直接传文件）
+- **幂等**：按路径哈希跳过已入库 demo（`--force` 强制重分析）
+- **失败隔离**：单场解析失败（含底层解析器 panic）只记入失败清单，不中断批次
+- **报告**：`--report <path>` 输出 JSON 汇总（ingested/skipped/failed、DP 数、动作分布、失败明细）；控制台实时进度
+- **安全操作**：`--dry-run` 只列出将分析的 demo 与跳过原因
 
 依赖：Python 3.11+、`demoparser2==0.42.0`（+ pandas）。其余全部 stdlib（sqlite3/http.server）。
 数据默认落在 `playerlab/data/`（SQLite + analyses/ 缓存）。测试：`python3 tests\test_core.py`（10 项全部通过）。

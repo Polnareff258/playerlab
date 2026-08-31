@@ -46,6 +46,14 @@ def main(argv=None):
     p_qa.add_argument("--out", default="")
     p_qa.add_argument("--n", type=int, default=60)
     sub.add_parser("ablation", help="feature-subset ablation")
+    p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
+    p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
+    p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
+    p_batch.add_argument("--dry-run", action="store_true", help="list what would be analyzed")
+    p_batch.add_argument("--force", action="store_true", help="re-analyze already-ingested demos")
+    p_batch.add_argument("--limit", type=int, default=None, help="max demos to process")
+    p_batch.add_argument("--report", default="", help="write JSON summary report to path")
+    p_batch.add_argument("--quiet", action="store_true", help="suppress per-demo progress")
     p_api = sub.add_parser("api", help="start local UI+API")
     p_api.add_argument("--port", type=int, default=8123)
     p_api.add_argument("--host", default="127.0.0.1")
@@ -120,6 +128,22 @@ def main(argv=None):
         for name, r in res.items():
             print(f"{name:<22} {r['n_predictions']:>4} {r['brier']:>7.4f} "
                   f"{r['max_calibration_deviation_pp']:>10.2f}")
+    elif args.cmd == "batch":
+        from .batch import run_batch, summarize, write_report
+        results = run_batch(cfg, args.paths, recursive=not args.no_recursive,
+                            force=args.force, dry_run=args.dry_run,
+                            limit=args.limit, verbose=not args.quiet)
+        report = summarize(results)
+        print("--- batch summary ---")
+        print(json.dumps({k: v for k, v in report.items() if k != "failures"},
+                         ensure_ascii=False, indent=1, default=str))
+        if report["failed"]:
+            print("failures:")
+            for f_ in report["failures"]:
+                print(f"  {f_['path']}: {f_['error']}")
+        if args.report:
+            path = write_report(report, args.report)
+            print(f"report written: {path}")
     elif args.cmd == "api":
         from .api import serve
         ui_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
