@@ -1,0 +1,78 @@
+# PlayerLab V1 — Counterfactual CS2 Decision Intelligence
+
+本地优先的 CS2 Demo 分析项目。核心目标：
+
+> 从 CS2 Demo 中自动识别关键决策点，区分「决策问题」和「执行问题」，并通过历史相似状态检索回答：
+> **「如果我当时做了另一个选择，历史上类似局面通常会怎样？」**
+
+V1 优先证明一条链真实、可靠、可追溯地工作：
+
+```
+DecisionPoint → GameState → Similar State Retrieval → Counterfactual Comparison
+```
+
+## 与 DAK Studio 的关系
+
+- DAK Studio / DAK packages 是 **analysis substrate**（发生了什么、表现如何）；
+- PlayerLab 是 **decision intelligence layer**（我选了哪个选择、还有哪些备选、历史上相似选择的实际结果如何、问题出在决策还是执行）。
+
+PlayerLab 不通过重复实现 mechanics dashboard 制造差异，只消费现有解析与分析能力。
+
+## 文档
+
+| 文档 | 内容 | 状态 |
+| --- | --- | --- |
+| [docs/EXISTING_PROJECTS.md](docs/EXISTING_PROJECTS.md) | 阶段 1：现有项目研究（DAK Studio / cs-demo-analyzer / demoparser2 / AWPy / CS Demo Manager 等） | ✅ |
+| [docs/TECHNICAL_SPIKE.md](docs/TECHNICAL_SPIKE.md) | 阶段 2：真实 Demo 数据可用性验证（252MB 真实 CS2 demo 实测） | ✅ |
+| [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md) | 阶段 2：能力矩阵（数据 × 来源 × 频率 × 精度） | ✅ |
+| [docs/COUNTERFACTUAL_DESIGN.md](docs/COUNTERFACTUAL_DESIGN.md) | 阶段 3：反事实可行性设计（14 问） | ✅ |
+| [docs/BACKTEST_DESIGN.md](docs/BACKTEST_DESIGN.md) | 阶段 4：反事实回测与验证设计 | ✅ |
+| [docs/DESIGN.md](docs/DESIGN.md) | 阶段 5：架构设计（模块边界 / 存储 / 管线 / LLM 边界 / token 预算） | ✅ |
+| [docs/MVP_PLAN.md](docs/MVP_PLAN.md) | 阶段 5：MVP 实现计划（M0–M8） | ✅ |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | V1.5 / V2 / V2+ / V3 路线（不实现） | ✅ |
+
+## 阶段状态
+
+- [x] 阶段 1：现有项目研究 → EXISTING_PROJECTS.md
+- [x] 阶段 2：Technical Spike（真实 CS2 Demo）→ TECHNICAL_SPIKE.md + CAPABILITY_MATRIX.md
+- [x] 阶段 3：Counterfactual Feasibility → COUNTERFACTUAL_DESIGN.md
+- [x] 阶段 4：Backtest Design → BACKTEST_DESIGN.md
+- [x] 阶段 5：Architecture → DESIGN.md + MVP_PLAN.md
+- [x] 阶段 6（已确认）：MVP 实现 M0–M8 → `core/playerlab/`（ingest/state/decision/features/counterfactual/backtest/api/cli）+ `ui/` + `tests/`
+- [x] 实现期验证：真实 demo 全链路走查通过（见下）
+- [ ] 人工验收：多场 demo 回测（LOMO 需 ≥2 场才有信号）与 Retrieval QA 标注
+
+## 实现期验证结果（252MB 真实 CS2 demo，de_dust2，18 局）
+
+- 全流程 38–50s/场：ingest → 60 个 DecisionPoint（PEEK 28 / HOLD 22 / DISENGAGE 6 / RE_PEEK 4）→ SQLite 入库
+- 反事实全链路跑通：RE_PEEK 查询 → HOLD n=8 / PEEK n=8 / DISENGAGE n=2 → Wilson CI + 证据强度 → COMPARISON_AVAILABLE；CI 重叠时诚实返回 NO_RELIABLE_DIFFERENCE
+- 证据可追溯：DP 链到精确 tick/事件（如 t39512 吃刀 40 → t39516 glock 反杀 2.9m）
+- 纪律生效：单场跨场检索 0 样本 → INSUFFICIENT_EVIDENCE（不编造）；backtest/ablation 在 ≥2 场时出校准/Brier/消融信号（单场诚实报告 0 预测）
+- 单元测试 10/10；复现性：重跑 DP 数量/分布/哈希完全一致
+- 字段勘误：`CCSPlayerPawn.origin`（陈旧出生点）→ `CBodyComponentBaseAnimGraph.m_vecX/Y/Z`；`m_vecBaseVelocity`（恒 0）→ 位置差分推导；`m_iTeamNum` 逐 tick 真实阵营
+
+## 实测数据（spike 摘要）
+
+- 解析器：demoparser2 0.42.0（MIT，Rust 核心）· 252MB 真实 CS2 Valve 官方 demo（de_dust2，18 局）
+- 全字段实测可用：XYZ / velocity / yaw / pitch / buttons / shots / damage / weapon / grenades / 点位名 / 脚步声 / 经济 / bomb / kill feed
+- 全量解析 <60s/场；visibility/nav 需复用 awpy LOS 原语与地图资产（生态已有）
+
+## 运行（MVP 实现）
+
+```powershell
+cd playerlab\core
+python3 -m playerlab.cli ingest "C:\path\to\demo.dem"   # 解析 + 检测 DP + 入库
+python3 -m playerlab.cli list                            # 匹配列表
+python3 -m playerlab.cli dps <demo_id>                   # DP 列表
+python3 -m playerlab.cli dp <dp_id>                      # DP 详情（JSON）
+python3 -m playerlab.cli whatif <dp_id>                  # 反事实对比（JSON）
+python3 -m playerlab.cli coverage                        # 相似状态覆盖报告
+python3 -m playerlab.cli backtest                        # 留一比赛校准/Brier
+python3 -m playerlab.cli qa --out ..\backtest\qa.json   # 检索 QA 批次导出
+python3 -m playerlab.cli ablation                        # 特征消融
+python3 -m playerlab.cli api --port 8123                 # 本地 UI + API
+# 浏览器打开 http://127.0.0.1:8123
+```
+
+依赖：Python 3.11+、`demoparser2==0.42.0`（+ pandas）。其余全部 stdlib（sqlite3/http.server）。
+数据默认落在 `playerlab/data/`（SQLite + analyses/ 缓存）。测试：`python3 tests\test_core.py`（10 项全部通过）。

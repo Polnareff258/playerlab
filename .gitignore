@@ -1,0 +1,24 @@
+# ---- runtime / analysis data (contains player PII from demos — NEVER commit) ----
+data/
+backtest/
+spike/probe_out.json
+spike/probe2_out.json
+
+# ---- python ----
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- node (spike npm scratch) ----
+spike/node_modules/
+
+# ---- generic ----
+*.sqlite
+*.pickle
+*.png
+*.jpg
+*.jpeg
+.DS_Store
+.idea/
+.vscode/
+*.log

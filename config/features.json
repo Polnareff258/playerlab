@@ -1,0 +1,17 @@
+{
+  "soft_weights": {
+    "time_left": 0.10,
+    "alive_diff": 0.15,
+    "hp": 0.10,
+    "weapon_class": 0.10,
+    "n_known_enemies": 0.10,
+    "known_spread": 0.05,
+    "nearest_known_enemy": 0.10,
+    "recent_contact": 0.10,
+    "teammate_near": 0.10,
+    "teammate_mid": 0.05,
+    "bomb_planted": 0.05,
+    "economy": 0.05,
+    "time_pressure": 0.05
+  }
+}

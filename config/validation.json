@@ -1,0 +1,10 @@
+{
+  "n_min_claim": 10,
+  "n_min_action": 5,
+  "wilson_z": 1.96,
+  "ci_overlap_alpha": 0.05,
+  "calib_max_dev_pp": 10.0,
+  "qa_topk": 5,
+  "qa_pass_min_score": 3.0,
+  "qa_pass_min_share": 0.8
+}
