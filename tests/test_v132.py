@@ -277,9 +277,10 @@ def test_geometry_provider_contract():
 
 def test_episode_detector_extraction():
     db = DB(":memory:")
-    ep = _episode("e1", P1, prims=["PREAIM_ERROR", "MOVING_SHOT"], method="DRY_PEEK")
+    ep = _episode("e1", P1, prims=["PREAIM_ERROR", "SHOT_WHILE_MOVING"], method="DRY_PEEK")
     dets = _episode_detectors(ep)
     assert "PREAIM_ERROR" in dets and "DRY_PEEK" in dets
+    assert "SHOT_WHILE_MOVING" in dets
 
 
 if __name__ == "__main__":

@@ -237,13 +237,19 @@ def execution_evaluation(episode: dict, cfg: Config,
                          engagement: dict | None = None) -> str:
     """ExecutionEvaluation (spec §58-§59): quality of the actual duel
     execution — aim readiness, movement, shot timing. Independent of both
-    strategic and engagement quality (spec §7/§108)."""
+    strategic and engagement quality (spec §7/§108).
+
+    V1.3.3 supplement: movement context uses weapon/distance/enemy-weapon
+    matchup (supplement §4-§5) — rifle-vs-pistol anti-headshot movement is
+    evaluated differently from rifle long-range strafe."""
     if not duel:
         return "INSUFFICIENT_EVIDENCE"
     eng = engagement or episode.get("_engagement") or {}
     matchup = eng.get("weapon_matchup") or {}
     self_cls = matchup.get("self_weapon_class", "UNKNOWN")
+    enemy_cls = matchup.get("enemy_weapon_class", "UNKNOWN")
     range_b = matchup.get("range_bucket", "UNKNOWN")
     from .duel import duel_evaluation, movement_effect
     me = movement_effect(None, cfg, duel, None, self_cls, range_b)
-    return duel_evaluation(None, cfg, duel, None, {}, me, range_b, self_cls)
+    return duel_evaluation(None, cfg, duel, None, {}, me, range_b, self_cls,
+                           enemy_cls)

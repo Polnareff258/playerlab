@@ -401,6 +401,17 @@ class DB:
                 "pipeline_validation='NOT_TESTED' "
                 "WHERE label_source IS NULL OR label_source=''")
             self.conn.execute("UPDATE schema_version SET version=8")
+        # V1.3.3 supplement: movement purpose + contextual moving-shot eval
+        _v9_cols = [
+            ("decision_episodes", "movement_purpose", "TEXT"),
+            ("decision_episodes", "moving_shot_evaluation", "TEXT"),
+        ]
+        for table, col, typ in _v9_cols:
+            cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        if current < 9:
+            self.conn.execute("UPDATE schema_version SET version=9")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -877,7 +888,7 @@ class DB:
                 "decision_domain", "engagement_id", "engagement_context",
                 "engagement_method", "movement_effect", "execution_primitives",
                 "duel_state_sequence", "weapon_matchup", "information_advantage",
-                "duel_phase")
+                "duel_phase", "movement_purpose", "moving_shot_evaluation")
 
     def upsert_decision_episode(self, e: dict):
         cols = self._DE_COLS
@@ -885,13 +896,15 @@ class DB:
         for k in ("temporal_context", "player_known_state", "macro_context",
                   "local_context", "feasibility", "immediate_result",
                   "engagement_context", "engagement_method", "movement_effect",
-                  "execution_primitives", "duel_state_sequence", "weapon_matchup"):
+                  "movement_purpose", "execution_primitives",
+                  "duel_state_sequence", "weapon_matchup"):
             v = params.get(k)
             if isinstance(v, (dict, list)):
                 params[k] = jd(v)
         for k in ("evidence_sufficiency", "strategic_evaluation",
                   "engagement_evaluation", "execution_evaluation",
                   "decision_domain", "engagement_id", "duel_phase",
+                  "moving_shot_evaluation",
                   "state_value_before", "state_value_after"):
             params.setdefault(k, None)
         for k in ("confidence", "extractor_version", "context_version",
@@ -900,11 +913,13 @@ class DB:
             params.setdefault(k, 0.0 if k == "confidence" else
                               ("2026-01-01" if k == "computed_at" else "v1.3.1-1"))
         for k in ("engagement_context", "engagement_method", "movement_effect",
-                  "execution_primitives", "duel_state_sequence", "weapon_matchup",
+                  "movement_purpose", "execution_primitives",
+                  "duel_state_sequence", "weapon_matchup",
                   "information_advantage"):
             if k not in params or params[k] is None:
                 params[k] = jd({}) if k not in ("execution_primitives",
-                                                 "duel_state_sequence") else jd([])
+                                                 "duel_state_sequence",
+                                                 "movement_purpose") else jd([])
         self.conn.execute(
             f"INSERT OR REPLACE INTO decision_episodes ({','.join(cols)}) "
             f"VALUES ({','.join(':' + c for c in cols)})", params)
@@ -928,7 +943,8 @@ class DB:
             for k in ("temporal_context", "player_known_state", "macro_context",
                       "local_context", "feasibility", "immediate_result",
                       "engagement_context", "engagement_method", "movement_effect",
-                      "execution_primitives", "duel_state_sequence", "weapon_matchup"):
+                      "movement_purpose", "execution_primitives",
+                      "duel_state_sequence", "weapon_matchup"):
                 if d.get(k):
                     d[k] = json.loads(d[k])
             # normalize legacy rows: primitives must be a list
@@ -946,7 +962,8 @@ class DB:
         for k in ("temporal_context", "player_known_state", "macro_context",
                   "local_context", "feasibility", "immediate_result",
                   "engagement_context", "engagement_method", "movement_effect",
-                  "execution_primitives", "duel_state_sequence", "weapon_matchup"):
+                  "movement_purpose", "execution_primitives",
+                  "duel_state_sequence", "weapon_matchup"):
             if d.get(k):
                 d[k] = json.loads(d[k])
         if isinstance(d.get("execution_primitives"), dict):

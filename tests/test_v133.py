@@ -242,6 +242,164 @@ def test_consensus_resolver_interface():
     assert issubclass(SingleHumanResolver, ConsensusResolver)
 
 
+# ============ supplement: movement-while-shooting is not automatically wrong ============
+
+def _duel(max_lat, reversals=0, pattern="ADAD", ducks=0):
+    return {"movement": {"max_lateral_speed": max_lat,
+                         "direction_reversals": reversals,
+                         "pattern": pattern, "duck_count": ducks},
+            "exposure_ticks": 20}
+
+
+class _FakeTC:
+    def __init__(self, mates=None):
+        self.mates = mates or []
+
+
+def _me(weapon, rng, duel, tc):
+    from playerlab.duel import movement_effect
+    return movement_effect(None, Config(), duel, tc, weapon, rng)
+
+
+def test_moving_shot_is_measurement_not_error():
+    """supplement §1: SHOT_WHILE_MOVING is a behavior fact; execution
+    primitives must NOT contain MOVING_SHOT as an implicit error."""
+    from playerlab.duel import execution_primitives
+    flags = execution_primitives(None, Config(), _duel(250), None)
+    assert "SHOT_WHILE_MOVING" in flags
+    assert "MOVING_SHOT" not in flags
+
+
+def test_moving_shot_case_a_long_rifle_poor():
+    """supplement §11 Case A: AK long range, stationary enemy, sustained
+    strafe, no tactical need -> POOR."""
+    from playerlab.duel import moving_shot_evaluation
+    duel = _duel(max_lat=260, reversals=3)
+    tc = _FakeTC([])
+    me = _me("RIFLE", "long", duel, tc)
+    ev = moving_shot_evaluation(duel, tc, "RIFLE", "long", "RIFLE", me)
+    assert ev in ("POOR", "QUESTIONABLE"), ev
+
+
+def test_moving_shot_case_b_smg_close_reasonable():
+    """supplement §11 Case B: MP9 close range fast strafe -> REASONABLE."""
+    from playerlab.duel import moving_shot_evaluation
+    duel = _duel(max_lat=300, reversals=2)
+    tc = _FakeTC([])
+    me = _me("SMG", "close", duel, tc)
+    ev = moving_shot_evaluation(duel, tc, "SMG", "close", "SMG", me)
+    assert ev == "REASONABLE", ev
+
+
+def test_moving_shot_case_c_rifle_vs_pistol_anti_headshot():
+    """supplement §4/§11 Case C: rifle vs pistol very close, strafing to avoid
+    one-tap headshot -> REASONABLE (bidirectional matchup matters)."""
+    from playerlab.duel import moving_shot_evaluation
+    duel = _duel(max_lat=200, reversals=2)
+    tc = _FakeTC([])
+    me = _me("RIFLE", "close", duel, tc)
+    # enemy is a one-tap pistol: anti-headshot movement is justified
+    ev = moving_shot_evaluation(duel, tc, "RIFLE", "close", "PISTOL", me)
+    assert ev == "REASONABLE", ev
+    # same movement vs another rifle at close: still reasonable (headshot risk
+    # from both sides) but the reason differs
+    ev2 = moving_shot_evaluation(duel, tc, "RIFLE", "close", "RIFLE", me)
+    assert ev2 == "REASONABLE", ev2
+
+
+def test_moving_shot_case_d_shotgun_mobile():
+    """supplement §6/§11 Case D: shotgun close range running/jump swing is
+    normal play -> REASONABLE regardless of accuracy cost."""
+    from playerlab.duel import moving_shot_evaluation
+    duel = _duel(max_lat=280, reversals=1)
+    tc = _FakeTC([])
+    me = _me("SHOTGUN", "close", duel, tc)
+    ev = moving_shot_evaluation(duel, tc, "SHOTGUN", "close", "RIFLE", me)
+    assert ev == "REASONABLE", ev
+
+
+def test_moving_shot_case_e_line_pull_team_value():
+    """supplement §8/§11 Case E: wide pull with teammates (line pull) -> the
+    movement itself is NOT an error; team value overrides mechanic penalty."""
+    from playerlab.duel import moving_shot_evaluation
+    duel = _duel(max_lat=400, reversals=0, pattern="WIDE_SWING")
+    tc = _FakeTC([{"steamid": 2, "dist": 800}])
+    me = _me("RIFLE", "medium", duel, tc)
+    assert me["line_pull_value"] in ("HIGH", "MEDIUM"), me
+    ev = moving_shot_evaluation(duel, tc, "RIFLE", "medium", "RIFLE", me)
+    assert ev == "REASONABLE", ev
+
+
+def test_moving_shot_case_f_purposeful_counter_strafe_vs_accidental():
+    """supplement §11 Case F: should have counter-strafed but moved without
+    purpose -> POOR; counter-strafe transition -> REASONABLE."""
+    from playerlab.duel import moving_shot_evaluation, detect_movement_purpose
+    # accidental: high accuracy cost + low opponent gain + no purpose
+    duel_bad = _duel(max_lat=180, reversals=0, pattern="SINGLE_STRAFE")
+    tc_bad = _FakeTC([])
+    me_bad = _me("RIFLE", "long", duel_bad, tc_bad)
+    ev_bad = moving_shot_evaluation(duel_bad, tc_bad, "RIFLE", "long", "RIFLE", me_bad)
+    assert ev_bad in ("POOR", "QUESTIONABLE"), ev_bad
+    # counter-strafe transition is a legitimate purpose
+    duel_cs = _duel(max_lat=150, reversals=1, pattern="COUNTER_STRAFE")
+    purposes = detect_movement_purpose(duel_cs, _FakeTC([]), "RIFLE", "long", {})
+    assert any(p["purpose"] == "COUNTER_STRAFE_TRANSITION" for p in purposes), purposes
+
+
+def test_movement_purpose_multi_label():
+    """supplement §2: MovementPurpose is multi-label with confidence."""
+    from playerlab.duel import detect_movement_purpose
+    duel = _duel(max_lat=350, reversals=3, pattern="ADAD")
+    tc = _FakeTC([{"steamid": 2, "dist": 900}])
+    me = _me("SMG", "close", duel, tc)
+    purposes = detect_movement_purpose(duel, tc, "SMG", "close", me)
+    labels = {p["purpose"] for p in purposes}
+    assert "AIM_DISRUPTION" in labels or "ANTI_HEADSHOT_MOVEMENT" in labels, labels
+    for p in purposes:
+        assert "confidence" in p and 0 <= p["confidence"] <= 1
+
+
+def test_movement_effect_tactical_fields():
+    """supplement §10: MovementEffect gains headshot/space/line-pull fields,
+    all LOW/MEDIUM/HIGH (no fake precision)."""
+    duel = _duel(max_lat=360, reversals=0, pattern="WIDE_SWING")
+    tc = _FakeTC([{"steamid": 2, "dist": 700}])
+    me = _me("RIFLE", "medium", duel, tc)
+    for k in ("headshot_risk_reduction", "space_creation_value",
+              "line_pull_value", "teammate_opportunity_value"):
+        assert me[k] in ("LOW", "MEDIUM", "HIGH"), (k, me[k])
+    assert me["line_pull_value"] in ("HIGH", "MEDIUM")
+    assert me["teammate_opportunity_value"] == "HIGH"
+
+
+def test_duel_evaluation_moving_shot_contextual():
+    """supplement §1/§11: duel_evaluation no longer blankets MOVING_SHOT;
+    reasonable moving shot can score UP instead of down."""
+    from playerlab.duel import duel_evaluation, movement_effect
+    # close SMG moving shot: +0.5 for reasonable movement
+    duel = _duel(max_lat=280, reversals=2)
+    tc = _FakeTC([])
+    me = _me("SMG", "close", duel, tc)
+    ev = duel_evaluation(None, Config(), duel, tc, {}, me, "close", "SMG")
+    # no other penalties -> should be at least REASONABLE (movement helped)
+    assert ev in ("REASONABLE", "GOOD"), ev
+    # long rifle purposeless strafe: penalized via MovingShotEvaluation POOR
+    duel2 = _duel(max_lat=260, reversals=3)
+    me2 = _me("RIFLE", "long", duel2, tc)
+    ev2 = duel_evaluation(None, Config(), duel2, tc, {}, me2, "long", "RIFLE")
+    assert ev2 in ("QUESTIONABLE", "POOR"), ev2
+
+
+def test_calibration_confirmed_moving_shot_reasonable():
+    """supplement §12: reasonable moving-shot labels count as CONFIRMED
+    (detector fired correctly, behavior was fine)."""
+    assert _confirmed("AIM_DISRUPTION_REASONABLE") is True
+    assert _confirmed("ANTI_HEADSHOT_MOVEMENT_REASONABLE") is True
+    assert _confirmed("LINE_PULL_REASONABLE") is True
+    assert _confirmed("ACCIDENTAL_MOVEMENT") is False
+    assert _confirmed("ACTUAL_INACCURATE_MOVING_SHOT") is True
+
+
 if __name__ == "__main__":
     import traceback
     failed = 0

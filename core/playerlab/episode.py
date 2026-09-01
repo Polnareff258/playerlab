@@ -428,11 +428,21 @@ def run_episodes(demo: IngestedDemo, cfg: Config, db: DB,
         if duel:
             matchup = (eng or {}).get("weapon_matchup") or {}
             self_name = matchup.get("self_weapon", "unknown")
+            enemy_cls = matchup.get("enemy_weapon_class", "UNKNOWN")
             rb = matchup.get("range_bucket", "UNKNOWN")
             ep["execution_primitives"] = execution_primitives(demo, cfg, duel, ep.get("_tc"))
             ep["movement_effect"] = movement_effect(
                 demo, cfg, duel, ep.get("_tc"),
                 engagement_class(self_name), rb)
+            # V1.3.3 supplement: movement purpose + contextual moving-shot eval
+            from .duel import (detect_movement_purpose, moving_shot_evaluation)
+            ep["movement_purpose"] = detect_movement_purpose(
+                duel, ep.get("_tc"), engagement_class(self_name), rb,
+                ep["movement_effect"])
+            if "SHOT_WHILE_MOVING" in ep["execution_primitives"]:
+                ep["moving_shot_evaluation"] = moving_shot_evaluation(
+                    duel, ep.get("_tc"), engagement_class(self_name), rb,
+                    enemy_cls, ep["movement_effect"])
             ep["execution_evaluation"] = execution_evaluation(ep, cfg, duel, eng)
             ep["duel_phase"] = duel.get("phase")
         # engagement_id: group the CONTACT_RESPONSE episode as the anchor of

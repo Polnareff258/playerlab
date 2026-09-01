@@ -55,11 +55,15 @@ PREAIM_LABELS = (
     "VERTICAL_ADJUSTMENT", "VISIBILITY_APPROXIMATION", "REACTION_ONLY",
     "INSUFFICIENT_CONTEXT", "OTHER", "UNSURE",
 )
-# MOVING_SHOT label categories (PART F §19)
+# MOVING_SHOT label categories (PART F §19 + supplement §12): shooting while
+# moving is a BEHAVIOR, not an error — labels capture why it was reasonable.
 MOVING_SHOT_LABELS = (
     "ACTUAL_INACCURATE_MOVING_SHOT", "COUNTER_STRAFE_TRANSITION",
-    "LOW_SPEED_ACCEPTABLE", "SMG_CLOSE_RANGE_REASONABLE",
-    "PISTOL_DYNAMIC_REASONABLE", "SHOTGUN_REASONABLE", "AIRBORNE_SPECIAL",
+    "AIM_DISRUPTION_REASONABLE", "ANTI_HEADSHOT_MOVEMENT_REASONABLE",
+    "SMG_CLOSE_RANGE_REASONABLE", "PISTOL_DYNAMIC_REASONABLE",
+    "SHOTGUN_MOBILE_REASONABLE", "SHOTGUN_JUMP_SWING_REASONABLE",
+    "LINE_PULL_REASONABLE", "SPACE_CREATION_REASONABLE",
+    "TACTICAL_JUMP_REASONABLE", "ACCIDENTAL_MOVEMENT",
     "DETECTION_ERROR", "INSUFFICIENT_CONTEXT", "OTHER", "UNSURE",
 )
 # DRY_PEEK evaluation labels (PART G §22)
@@ -353,7 +357,15 @@ def _honest_ground_truth_note(detectors: dict) -> str:
 def _confirmed(label) -> bool:
     return label in ("YES", "TRUE", "CONFIRMED", "CORRECT",
                      "REAL_PREAIM_ERROR", "ACTUAL_INACCURATE_MOVING_SHOT",
-                     "REASONABLE_DRY_PEEK")
+                     "REASONABLE_DRY_PEEK",
+                     # supplement §12: reasonable moving-shot labels confirm
+                     # the detector fired correctly (behavior was fine)
+                     "AIM_DISRUPTION_REASONABLE",
+                     "ANTI_HEADSHOT_MOVEMENT_REASONABLE",
+                     "SMG_CLOSE_RANGE_REASONABLE", "PISTOL_DYNAMIC_REASONABLE",
+                     "SHOTGUN_MOBILE_REASONABLE", "SHOTGUN_JUMP_SWING_REASONABLE",
+                     "LINE_PULL_REASONABLE", "SPACE_CREATION_REASONABLE",
+                     "TACTICAL_JUMP_REASONABLE")
 
 
 def _per_context(reviewed: list[dict]) -> dict:

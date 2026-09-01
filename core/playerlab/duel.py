@@ -28,6 +28,14 @@ MOVEMENT_PATTERNS = ("STATIC", "COUNTER_STRAFE", "SINGLE_STRAFE", "ADAD",
                      "IRREGULAR_STRAFE", "CROUCH", "CROUCH_STRAFE",
                      "CROUCH_SPAM", "WIDE_SWING", "UNKNOWN")
 
+# V1.3.3 supplement: movement purpose (multi-label with confidence)
+MOVEMENT_PURPOSES = (
+    "AIM_DISRUPTION", "ANTI_HEADSHOT_MOVEMENT", "SPACE_CREATION", "LINE_PULL",
+    "WIDE_SWING", "JUMP_PEEK", "JUMP_SWING", "SHOTGUN_ENTRY",
+    "CLOSE_RANGE_PRESSURE", "COUNTER_STRAFE_TRANSITION", "ACCIDENTAL_MOVEMENT",
+    "UNKNOWN",
+)
+
 # hitbox approximations (APPROXIMATE_HITBOX, spec §38) — view-height offsets
 HEAD_OFFSET = 55.0    # ~1.7m eye height approx above feet (units)
 CHEST_OFFSET = 30.0
@@ -231,8 +239,11 @@ def _err_bucket(err: float) -> str:
 
 
 def execution_primitives(demo, cfg, duel: dict, tc) -> list[str]:
-    """MVP execution primitives (spec §100):
-    FIRE_BEFORE_AIM_READY / PREAIM_ERROR / MOVING_SHOT / IRREGULAR_DUEL_MOVEMENT."""
+    """MVP execution primitives (spec §100) + V1.3.3 supplement.
+
+    SHOT_WHILE_MOVING is a MEASUREMENT (behavior fact), never an error by
+    itself — see MovingShotEvaluation for the contextual judgment.
+    """
     flags = []
     # FIRE_BEFORE_AIM_READY (spec §39): shot with large crosshair error
     shot_err = duel.get("shot_crosshair_error")
@@ -242,10 +253,10 @@ def execution_primitives(demo, cfg, duel: dict, tc) -> list[str]:
     preaim = duel.get("preaim_error") or {}
     if preaim.get("bucket") in ("HIGH", "MEDIUM"):
         flags.append("PREAIM_ERROR")
-    # MOVING_SHOT (spec §44): shot while lateral velocity high
+    # SHOT_WHILE_MOVING (measurement): shot while lateral velocity high
     movement = duel.get("movement") or {}
     if movement.get("max_lateral_speed", 0) >= 130.0:
-        flags.append("MOVING_SHOT")
+        flags.append("SHOT_WHILE_MOVING")
     # IRREGULAR_DUEL_MOVEMENT (spec §50): high reversals + no crouch benefit
     if movement.get("direction_reversals", 0) >= 3 and \
             movement.get("pattern") in ("ADAD", "IRREGULAR_STRAFE"):
@@ -253,10 +264,55 @@ def execution_primitives(demo, cfg, duel: dict, tc) -> list[str]:
     return flags
 
 
+def detect_movement_purpose(duel: dict, tc, weapon_class: str,
+                            range_b: str, movement_effect: dict) -> list[dict]:
+    """MovementPurpose (supplement §2): why is the player moving while shooting?
+    Multi-label with confidence; deterministic heuristics. Never assumes a
+    moving shot is an error — purpose feeds the contextual evaluation."""
+    movement = duel.get("movement") or {}
+    pattern = movement.get("pattern", "UNKNOWN")
+    reversals = movement.get("direction_reversals", 0)
+    max_lat = movement.get("max_lateral_speed", 0.0)
+    ducks = movement.get("duck_count", 0)
+    purposes = []
+
+    def add(p, conf):
+        if conf > 0.2:
+            purposes.append({"purpose": p, "confidence": round(conf, 3)})
+
+    # COUNTER_STRAFE_TRANSITION: single strafe + low reversals (stopping)
+    if pattern == "COUNTER_STRAFE" and reversals <= 1:
+        add("COUNTER_STRAFE_TRANSITION", 0.7)
+    # ANTI_HEADSHOT_MOVEMENT: close range + lateral movement + sustained duel
+    # (rifle vs pistol close, or any close duel where a headshot is lethal)
+    if range_b == "close" and max_lat >= 130.0 and reversals >= 2:
+        add("ANTI_HEADSHOT_MOVEMENT", 0.6)
+    # SHOTGUN_ENTRY / shotgun mobile: shotgun + close range + any movement
+    if weapon_class == "SHOTGUN" and range_b == "close":
+        add("SHOTGUN_ENTRY", 0.6)
+        add("CLOSE_RANGE_PRESSURE", 0.5)
+    # AIM_DISRUPTION: ADAD / irregular strafe in an active duel
+    if pattern in ("ADAD", "IRREGULAR_STRAFE") and max_lat >= 160.0:
+        add("AIM_DISRUPTION", 0.6)
+    # WIDE_SWING: wide lateral push
+    if pattern == "WIDE_SWING" and max_lat >= 320.0:
+        add("WIDE_SWING", 0.7)
+    # LINE_PULL / SPACE_CREATION: wide push with teammates (team context) —
+    # approximated: wide swing while a teammate is nearby (tc.mates)
+    if pattern == "WIDE_SWING" and getattr(tc, "mates", None) and len(tc.mates) >= 1:
+        add("LINE_PULL", 0.5)
+        add("SPACE_CREATION", 0.5)
+    # JUMP_*: from movement sequence jump detection (not yet parsed in v1.3.1)
+    # placeholder — set UNKNOWN when nothing above fires
+    if not purposes:
+        purposes.append({"purpose": "UNKNOWN", "confidence": 0.5})
+    return purposes
+
+
 def movement_effect(demo, cfg, duel: dict, tc, weapon_class: str,
                     range_b: str) -> dict:
-    """MovementEffect (spec §51-§57): self cost vs opponent difficulty.
-    Deterministic heuristic; LOW/MEDIUM/HIGH/UNKNOWN only (spec §52)."""
+    """MovementEffect (spec §51-§57 + supplement §10): self cost vs opponent
+    difficulty AND tactical value fields. LOW/MEDIUM/HIGH/UNKNOWN only."""
     movement = duel.get("movement") or {}
     pattern = movement.get("pattern", "UNKNOWN")
     reversals = movement.get("direction_reversals", 0)
@@ -295,11 +351,30 @@ def movement_effect(demo, cfg, duel: dict, tc, weapon_class: str,
         diff_score += 0.5
     opponent_diff = "HIGH" if diff_score >= 2.5 else ("MEDIUM" if diff_score >= 1.0 else "LOW")
 
+    # ---- supplement §10: tactical value fields ----
+    # headshot risk reduction: movement lowers the enemy's headshot chance —
+    # strongest when the enemy weapon one-taps (pistols/awp) at close range
+    headshot_reduction = "LOW"
+    if range_b == "close" and max_lat >= 130.0 and reversals >= 1:
+        headshot_reduction = "HIGH" if pattern in ("ADAD", "IRREGULAR_STRAFE") else "MEDIUM"
+    # space creation / line pull: wide pushes with teammate presence
+    mates = getattr(tc, "mates", None) or []
+    space_value = "HIGH" if pattern == "WIDE_SWING" and mates else (
+        "MEDIUM" if pattern == "WIDE_SWING" else "LOW")
+    line_pull_value = "HIGH" if pattern == "WIDE_SWING" and mates and max_lat >= 320 else (
+        "MEDIUM" if pattern == "WIDE_SWING" else "LOW")
+    teammate_opportunity = "HIGH" if mates and pattern in ("WIDE_SWING", "ADAD") else "LOW"
+
     return {
         "self_accuracy_cost": self_acc,
         "self_aim_stability_cost": self_stab,
         "estimated_opponent_tracking_difficulty": opponent_diff,
         "estimated_target_difficulty": opponent_diff,  # alias (spec §56 naming)
+        # supplement §10 fields
+        "headshot_risk_reduction": headshot_reduction,
+        "space_creation_value": space_value,
+        "line_pull_value": line_pull_value,
+        "teammate_opportunity_value": teammate_opportunity,
         "exposure_effect": ("HIGH" if pattern == "WIDE_SWING" else "MEDIUM"
                             if pattern in ("ADAD", "IRREGULAR_STRAFE") else "LOW"),
         "escape_value": ("HIGH" if pattern in ("WIDE_SWING",) and max_lat >= 400 else "LOW"),
@@ -308,22 +383,94 @@ def movement_effect(demo, cfg, duel: dict, tc, weapon_class: str,
     }
 
 
+def moving_shot_evaluation(duel: dict, tc, weapon_class: str, range_b: str,
+                           enemy_weapon_class: str, movement_effect: dict) -> str:
+    """Contextual MovingShotEvaluation (supplement §11):
+    REASONABLE / QUESTIONABLE / POOR / INSUFFICIENT_EVIDENCE.
+
+    Shooting while moving is a BEHAVIOR, not an error. The judgment asks:
+    does the movement's tactical value compensate for the accuracy cost?
+
+    Case A: rifle long-range, stationary enemy, no tactical need, sustained
+            strafe fire -> POOR
+    Case B: SMG close range, fast strafe -> REASONABLE
+    Case C: rifle vs pistol very close, strafing to avoid one-tap headshot
+            -> REASONABLE (anti-headshot)
+    Case D: shotgun close range, running / jump swing -> REASONABLE
+    Case E: wide pull with teammates (line pull) -> movement itself NOT an
+            error (team value overrides mechanic penalty, §9/§13)
+    Case F: should have counter-strafed for a precise shot but moved without
+            purpose -> POOR
+    """
+    movement = duel.get("movement") or {}
+    pattern = movement.get("pattern", "UNKNOWN")
+    max_lat = movement.get("max_lateral_speed", 0.0)
+    reversals = movement.get("direction_reversals", 0)
+    if max_lat < 130.0:
+        return "INSUFFICIENT_EVIDENCE"  # not actually a moving shot
+
+    me = movement_effect or {}
+    self_acc = me.get("self_accuracy_cost", "MEDIUM")
+    opp_diff = me.get("estimated_opponent_tracking_difficulty", "LOW")
+    head_red = me.get("headshot_risk_reduction", "LOW")
+    space_val = me.get("space_creation_value", "LOW")
+    line_pull = me.get("line_pull_value", "LOW")
+    mate_opp = me.get("teammate_opportunity_value", "LOW")
+
+    # Case E: team-value override — line pull / space creation with teammates
+    if line_pull in ("HIGH", "MEDIUM") or mate_opp == "HIGH" or space_val == "HIGH":
+        return "REASONABLE"
+    # Case D: shotgun close-range mobility is normal play
+    if weapon_class == "SHOTGUN" and range_b == "close":
+        return "REASONABLE"
+    # Case C: anti-headshot movement (rifle vs one-tap enemy at close range)
+    if range_b == "close" and head_red in ("HIGH", "MEDIUM"):
+        if enemy_weapon_class in ("PISTOL", "AWP", "SNIPER_OTHER") or \
+                head_red == "HIGH":
+            return "REASONABLE"
+    # Case B: SMG close range movement is expected
+    if weapon_class in ("SMG", "PISTOL") and range_b == "close":
+        return "REASONABLE"
+    # Case A: rifle/sniper long range, sustained strafe, no tactical purpose
+    if weapon_class in ("RIFLE", "AWP", "SNIPER_OTHER") and range_b in ("medium", "long"):
+        if self_acc == "HIGH" and opp_diff in ("LOW", "MEDIUM"):
+            return "POOR"
+        return "QUESTIONABLE"
+    # Case F: should have stopped but moved without purpose
+    if self_acc == "HIGH" and opp_diff == "LOW" and head_red == "LOW":
+        return "POOR"
+    # balance: accuracy cost vs opponent difficulty gain (§3)
+    if self_acc in ("HIGH", "MEDIUM") and opp_diff == "HIGH":
+        return "REASONABLE"
+    return "QUESTIONABLE"
+
+
 def duel_evaluation(demo, cfg, duel: dict, tc, engagement_method: dict,
                     movement_effect: dict, range_b: str,
-                    weapon_class: str) -> str:
+                    weapon_class: str, enemy_weapon_class: str = "UNKNOWN") -> str:
     """DuelExecutionEvaluation (spec §58-§59): GOOD..POOR, context-aware.
     Movement context (spec §57): close SMG irregular strafe may be REASONABLE,
-    long-range AK ADAD may be QUESTIONABLE."""
+    long-range AK ADAD may be QUESTIONABLE.
+
+    V1.3.3 supplement: SHOT_WHILE_MOVING is evaluated contextually via
+    moving_shot_evaluation — never a blanket penalty. Team-value override
+    (line pull / space creation) can cancel mechanic penalties (§9/§13)."""
     flags = execution_primitives(demo, cfg, duel, tc)
     score = 0.0
     if "FIRE_BEFORE_AIM_READY" in flags:
         score -= 1.5
     if "PREAIM_ERROR" in flags:
         score -= 1.0
-    if "MOVING_SHOT" in flags and weapon_class in ("AWP", "SNIPER_OTHER"):
-        score -= 1.5
-    elif "MOVING_SHOT" in flags:
-        score -= 0.5
+    # SHOT_WHILE_MOVING: contextual, NOT automatic (supplement §1/§11)
+    if "SHOT_WHILE_MOVING" in flags:
+        mse = moving_shot_evaluation(duel, tc, weapon_class, range_b,
+                                     enemy_weapon_class, movement_effect)
+        if mse == "POOR":
+            score -= 1.5
+        elif mse == "QUESTIONABLE":
+            score -= 0.5
+        elif mse == "REASONABLE":
+            score += 0.5   # movement was justified
     if "IRREGULAR_DUEL_MOVEMENT" in flags:
         if range_b == "close" and weapon_class in ("SMG", "SHOTGUN", "PISTOL"):
             score += 0.5   # movement works at close range (spec §57/§109)

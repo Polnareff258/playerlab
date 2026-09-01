@@ -23,6 +23,11 @@ interpretation / simulation / human judgment / confidence / ground truth。
 - **Geometry A/B 基础设施**（OFF/ON 同批 demo + episode-level diff +
   复现元数据）—— 资产就绪前诚实输出 `GEOMETRY_AB_PENDING_ASSETS`。
 - **Honest Rules**：无真人标签 → `NO_REAL_CALIBRATION_AVAILABLE`，不伪造。
+- **MOVING_SHOT 语义修正**：`SHOT_WHILE_MOVING` 是行为事实不是错误；新增
+  MovementPurpose（12 类多标签）+ MovementEffect 战术价值字段 + 上下文
+  MovingShotEvaluation（weapon/distance/enemy weapon/团队价值）—— 真实 demo
+  275 个移动射击中仅 2 个评 POOR，178 个 REASONABLE（含 rifle-vs-pistol
+  防一枪头、shotgun 近战、line pull 拉枪线等合理场景）。
 
 详见 [docs/V1_3_3_DELTA.md](docs/V1_3_3_DELTA.md) · [docs/HUMAN_CALIBRATION_PROTOCOL.md](docs/HUMAN_CALIBRATION_PROTOCOL.md) · [docs/GEOMETRY_AB_RESULTS.md](docs/GEOMETRY_AB_RESULTS.md) · [docs/DETECTOR_VALIDITY_REPORT.md](docs/DETECTOR_VALIDITY_REPORT.md) · [docs/MANUAL_ASSET_SETUP.md](docs/MANUAL_ASSET_SETUP.md)。
 

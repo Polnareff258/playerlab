@@ -23,19 +23,23 @@
 更高层 interpretation。V1.3.2 的 PREAIM 高数量（2509/6场）**不能直接解读为
 玩家预瞄差**：需 HUMAN 标注区分 UNEXPECTED_ENEMY_POSITION 等 FP 类别。
 
-## 2. MOVING_SHOT
+## 2. MOVING_SHOT → SHOT_WHILE_MOVING（V1.3.3 supplement 语义修正）
 
 | 维度 | 现状 |
 | --- | --- |
-| **measurement** | `SHOT_WHILE_MOVING`：开枪 tick 的 lateral velocity ≥130u/s |
-| **measurement validity** | ✅ 行为事实（速度投影到 view-perpendicular 轴）；阈值 130 为单值 |
-| **interpretation** | `MOVEMENT_HURT_ACCURACY`（隐式）：velocity>thr ⇒ error。**不成立**：SMG 近距 / pistol 动态 / 急停过渡 / 低速可接受 |
-| **human confirmation** | 0（10 类 taxonomy 已备） |
-| **weapon-aware threshold** | ⚠️ 未分武器组（rifle/SMG/pistol/sniper/shotgun）；`threshold_sensitivity` 已实现，**等 HUMAN 数据后调**（PART F §20：不无证据改阈值） |
+| **measurement** | `SHOT_WHILE_MOVING`：开枪 tick 的 lateral velocity ≥130u/s —— **行为事实，不是错误**（supplement §1） |
+| **measurement validity** | ✅ 速度投影到 view-perpendicular 轴；`MOVING_SHOT` 旧 primitive 已删除（不再把 velocity>threshold 隐式等于 error） |
+| **MovementPurpose** | ✅ 12 类多标签：AIM_DISRUPTION / ANTI_HEADSHOT_MOVEMENT / SPACE_CREATION / LINE_PULL / WIDE_SWING / JUMP_PEEK / JUMP_SWING / SHOTGUN_ENTRY / CLOSE_RANGE_PRESSURE / COUNTER_STRAFE_TRANSITION / ACCIDENTAL_MOVEMENT / UNKNOWN |
+| **MovementEffect 扩展** | ✅ + headshot_risk_reduction / space_creation_value / line_pull_value / teammate_opportunity_value（LOW/MED/HIGH/UNKNOWN，supplement §10） |
+| **MovingShotEvaluation** | ✅ REASONABLE/QUESTIONABLE/POOR/INSUFFICIENT：contextual（weapon/distance/enemy weapon/purpose/team value，supplement §11） |
+| **双向 matchup** | ✅ rifle vs pistol close → ANTI_HEADSHOT_MOVEMENT 合理（§4-§5）；shotgun mobile 正常打法（§6）；line pull 团队价值覆盖机械惩罚（§8-§9/§13） |
+| **human confirmation** | 0（16 类 taxonomy 已备，supplement §12） |
+| **weapon-aware threshold** | ⚠️ 未分武器组硬改阈值；`threshold_sensitivity` 等 HUMAN 数据后调（PART F §20） |
 | **simulated pipeline** | PIPELINE_VALIDATED（25 条） |
 
-**审计结论**：需把 `SHOT_WHILE_MOVING`（行为）与 `MOVEMENT_HURT_ACCURACY`
-（评价）在 schema/输出中显式分离；武器感知阈值依赖 HUMAN 标注。
+**核心原则（supplement §14）**：Movement is not the problem. Unjustified
+movement cost is the problem. 系统问的不是"你为什么没停下来打"，而是
+"这次移动带来的收益是否足以补偿射击精度的损失"。
 
 ## 3. DRY_PEEK
 
@@ -65,7 +69,7 @@
 | detector | measurement | interpretation 风险 | human | 建议 |
 | --- | --- | --- | --- | --- |
 | PREAIM_ERROR | 角度 offset（valid） | 高（FP 类别多） | 0 | 优先标注；taxonomy 9 类 |
-| MOVING_SHOT | 速度事实（valid） | 中（武器/距离上下文） | 0 | 标注 + weapon-aware threshold |
+| SHOT_WHILE_MOVING | 速度事实（valid） | **已解耦**：行为≠错误，MovingShotEvaluation 上下文化 | 0 | 标注 16 类；weapon-aware threshold |
 | DRY_PEEK | flash 缺失（valid） | 中（行为≠错误） | 0 | 标注 4 类评价 |
 | FIRE_BEFORE_AIM_READY | 角度误差（valid） | 中（fire 类别区分） | 0 | 补样本 + 标注 |
 

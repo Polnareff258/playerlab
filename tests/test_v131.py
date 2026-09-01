@@ -200,14 +200,17 @@ def test_angular_error():
 
 
 def test_execution_primitives():
-    """Spec §120-D: moving shot + fire before aim ready detectable."""
+    """Spec §120-D: moving shot + fire before aim ready detectable.
+    V1.3.3: SHOT_WHILE_MOVING is the measurement (behavior fact); MOVING_SHOT
+    no longer exists as a primitive (it was conflating behavior with error)."""
     demo, cfg, idx, duel = duel_fixture()
     flags = execution_primitives(demo, cfg, duel, None)
     assert isinstance(flags, list)
-    # duel fixture has player moving (200u/s) -> MOVING_SHOT likely
+    assert "MOVING_SHOT" not in flags  # renamed: behavior fact, not an error
+    # duel fixture has player moving (200u/s) -> SHOT_WHILE_MOVING likely
     movement = duel.get("movement") or {}
     if movement.get("max_lateral_speed", 0) >= 130.0:
-        assert "MOVING_SHOT" in flags, flags
+        assert "SHOT_WHILE_MOVING" in flags, flags
 
 
 def test_movement_effect_dual_face():
