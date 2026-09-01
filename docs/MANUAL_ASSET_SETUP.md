@@ -1,47 +1,64 @@
-# MANUAL_ASSET_SETUP.md — Geometry 地图资产手动设置（V1.3.3 PART H）
+# MANUAL_ASSET_SETUP.md — Geometry 地图资产设置（V1.3.3 PART H）
 
-> **为什么手动**：CS2 的 `.nav`（导航网格）与 `.vphys`（碰撞网格，KV3 格式）资产
-> 体积大（每图 50-120MB）、来源分散（社区/游戏安装目录）、且随 CS2 更新变化。
-> 自动下载存在版权/来源/稳定性问题 → 本版本**不硬做自动下载**（PART H §23），
-> 提供手动设置 + 资产 metadata 记录（§24）保证可复现。
+> **背景**：CS2 的 `.nav`（导航网格）与 `.tri`（可见性三角形）资产体积大、
+> 来源分散，且随 CS2 更新变化。PlayerLab 的 `scripts/setup_geometry_assets.py`
+> 会**自动尝试获取**资产；仅当自动获取失败（无本地 CS2、镜像不可达）时才需要
+> 手动放置。资产 metadata 由脚本写入 `manifest.json`（§24）保证可复现。
 
 ---
 
-## 1. 需要什么
+## 1. 自动获取（推荐，脚本自动完成）
+
+`start.bat` 启动时自动运行；也可手动执行：
+
+```powershell
+# 检查哪些图缺资产
+python scripts\setup_geometry_assets.py --check
+
+# 自动获取（按优先级）：
+#   1) 本地 CS2 安装目录的 .nav（游戏自带，版本正确）
+#   2) awpy 镜像 https://awpycs.com/{patch}/navs.zip + tris.zip
+python scripts\setup_geometry_assets.py --auto
+```
+
+自动获取失败时脚本会打印手动指引，且 PlayerLab **仍可正常打开**——
+几何查询优雅降级为 `unknown`（NullGeometry，§32）。
+
+## 2. 需要什么（手动方案）
 
 | 资产 | 用途 | 来源建议 | 大小 |
 | --- | --- | --- | --- |
-| `<map>.nav` | nav distance / path（`NavMesh.from_path`） | CS2 游戏安装目录 `csgo/maps/` 或社区 nav 资产包 | 1-3MB |
-| `<map>.vphys` | LOS raycast / cover（`read_tri_file`） | cs2-map-parser 社区导出 / awpy 文档链接 | 50-120MB |
+| `<map>.nav` | nav distance / path（`NavMesh.from_path`） | CS2 游戏目录 `game/csgo/maps/` | 1-3MB |
+| `<map>.tri` | LOS raycast / cover（`read_tri_file`） | `pip install awpy && awpy get tris` | ~20MB/图 |
 
-当前需要的图：`de_dust2`、`de_mirage`（A/B 实验 PART I §25）。
+需要的图：`de_dust2`、`de_mirage`（A/B 实验 PART I §25）。
 
-## 2. 放置位置
+## 3. 放置位置
 
 ```
 data/maps/
 ├── de_dust2.nav
-├── de_dust2.vphys
+├── de_dust2.tri
 ├── de_mirage.nav
-├── de_mirage.vphys
+├── de_mirage.tri
 └── manifest.json      # 资产 metadata（setup 脚本写入）
 ```
 
 `data/` 已在 `.gitignore` —— **资产绝不进 git**（§23）。
 
-## 3. 注册资产（记录 metadata，§24）
+## 4. 注册资产（手动方式）
 
 ```powershell
-# 先把 .nav / .vphys 拷贝到 data/maps/
-python scripts\setup_geometry_assets.py --map de_dust2 --nav data\maps\de_dust2.nav --vphys data\maps\de_dust2.vphys --source manual
-python scripts\setup_geometry_assets.py --map de_mirage --nav data\maps\de_mirage.nav --vphys data\maps\de_mirage.vphys --source manual
+# 先把 .nav / .tri 拷贝到 data/maps/
+python scripts\setup_geometry_assets.py --map de_dust2 --nav data\maps\de_dust2.nav --tri data\maps\de_dust2.tri --source manual
+python scripts\setup_geometry_assets.py --map de_mirage --nav data\maps\de_mirage.nav --tri data\maps\de_mirage.tri --source manual
 python scripts\setup_geometry_assets.py --list-known
 ```
 
 `manifest.json` 记录：`map_name / asset_version / source / file_hash / game_build /
 created_at` —— CS2 更新后地图变化导致结果无法复现时可对照哈希排查。
 
-## 4. 启用 Geometry
+## 5. 启用 Geometry
 
 ```json
 // config/model_intelligence.json（或新建 config/geometry.json）
@@ -57,20 +74,9 @@ created_at` —— CS2 更新后地图变化导致结果无法复现时可对照
 - EvidenceSufficiency 的几何加分项生效（部分 MEDIUM → HIGH）。
 - 可跑 `python -m playerlab.cli geometry-ab <demo.dem>` 做 OFF/ON 对照（PART I）。
 
-## 5. 验证
+## 6. 验证
 
-```python
-from playerlab.geometry import get_geometry
-g = get_geometry("awpy", nav_dir="data/maps", tri_dir="data/maps")
-print(g.get_metadata())          # source=awpy, quality=approximate
-print(g.can_see("de_dust2", (0, 0, 0), (1000, 1000, 0)))   # True/False/None
-print(g.nav_distance("de_dust2", (0, 0, 0), (1000, 0, 0)))  # float/None
+```powershell
+python scripts\setup_geometry_assets.py --check
+# 期望 [OK] de_dust2: nav=Y tri=Y registered=True 等
 ```
-
-## 6. 诚实规则
-
-- **无资产 → `GEOMETRY_AB_PENDING_ASSETS`**（PART V）：A/B 实验报告如实输出
-  `geometry_quality="none"`，不伪造 experiment。
-- **awpy `is_visible` 是纯几何**（不含烟雾/闪光遮挡）→ metadata
-  `geometry_quality="approximate"`，不标 exact（§33）。
-- 资产未就绪时 PlayerLab 全部功能正常（NullGeometryProvider 兜底）。

@@ -10,6 +10,8 @@ see docs/GEOMETRY_SPIKE.md for the V1.3.2 investigation conclusion.
 """
 from __future__ import annotations
 
+import os
+
 from .context import TemporalContext
 
 GEOMETRY_SOURCES = ("null", "awpy", "custom-nav")
@@ -65,6 +67,11 @@ class AwpyGeometryProvider(GeometryProvider):
 
     Loading is lazy and failure-tolerant: if awpy or the map assets are
     missing, every query degrades to None (graceful fallback, §32).
+
+    Assets: data/maps/{map}.nav (navigation mesh) + data/maps/{map}.tri
+    (visibility triangles). Download both automatically with:
+        python scripts/setup_geometry_assets.py --auto
+    (awpy mirror: https://awpycs.com/{patch}/navs.zip + /tris.zip)
     """
 
     source = "awpy"
@@ -72,8 +79,12 @@ class AwpyGeometryProvider(GeometryProvider):
     version = "0.1"
 
     def __init__(self, nav_dir: str | None = None, tri_dir: str | None = None):
-        self.nav_dir = nav_dir
-        self.tri_dir = tri_dir
+        # default to the project data/maps dir (next to this package)
+        if nav_dir is None or tri_dir is None:
+            base = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__)))), "data", "maps")
+        self.nav_dir = nav_dir or base
+        self.tri_dir = tri_dir or base
         self._nav = {}
         self._tri = {}
         self._error = None
@@ -90,9 +101,8 @@ class AwpyGeometryProvider(GeometryProvider):
         try:
             from awpy.nav import NavMesh
             from awpy.visibility import read_tri_file
-            import os
             nav_path = os.path.join(self.nav_dir or "", f"{map_name}.nav")
-            tri_path = os.path.join(self.tri_dir or "", f"{map_name}.vphys")
+            tri_path = os.path.join(self.tri_dir or "", f"{map_name}.tri")
             if os.path.isfile(nav_path):
                 self._nav[map_name] = NavMesh.from_path(nav_path)
             if os.path.isfile(tri_path):
@@ -132,8 +142,9 @@ class AwpyGeometryProvider(GeometryProvider):
 
     def get_metadata(self) -> dict:
         d = super().get_metadata()
-        d["note"] = ("awpy geometry: approximate; needs .nav + .vphys map assets "
-                     "under nav_dir/tri_dir; loads lazily; errors degrade to None")
+        d["note"] = ("awpy geometry: approximate; needs .nav + .tri map assets "
+                     "under nav_dir/tri_dir (data/maps/); loads lazily; "
+                     "errors degrade to None")
         if self._error:
             d["error"] = self._error
         return d

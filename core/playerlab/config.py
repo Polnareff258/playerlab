@@ -83,8 +83,8 @@ class Config:
     csnet_repo_dir: str = ""         # e.g. external/cs-net
     # --- V1.3.2 optional geometry (PART F) ---
     geometry_provider: str = "null"  # "null" | "awpy"
-    geometry_nav_dir: str = ""       # .nav assets dir
-    geometry_tri_dir: str = ""       # .vphys assets dir
+    geometry_nav_dir: str = ""       # .nav assets dir (default: data/maps)
+    geometry_tri_dir: str = ""       # .tri assets dir (default: data/maps)
     review_moments_top_n: int = 5    # default Top Review Moments per player
     # --- V1.3.3 calibration thresholds (PART N: in config, not hardcoded) ---
     cal_min_for_experimental: int = 5

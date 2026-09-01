@@ -3,10 +3,12 @@
 > **诚实状态：`GEOMETRY_AB_PENDING_ASSETS`（PART V）**
 > 本版本完成了 A/B 实验**基础设施**（`ab_experiment.py`：OFF/ON 同批 demo 双跑、
 > episode-level diff、experiment_id/config_hash/git_commit/demo_hash 复现元数据），
-> 但**未跑完整实验**：de_dust2 / de_mirage 的 `.nav` + `.vphys` 资产未就绪
-> （来源分散 + 大体积，遵循 PART H 不硬做自动下载）。
-> 无资产时 AwpyGeometryProvider 返回 None → Geometry ON ≈ OFF → 实验无意义，
-> 因此**不伪造 experiment**。资产就绪后按 §3 流程一键执行。
+> 但**未跑完整实验**：de_dust2 / de_mirage 的 `.nav` + `.tri` 资产未就绪
+> （awpy 镜像 awpycs.com 当前不可达，本机无 CS2 安装）。
+> `scripts/setup_geometry_assets.py --auto` 会尝试自动获取（本地 CS2 → awpy 镜像）；
+> 获取失败时打印手动指引。无资产时 AwpyGeometryProvider 返回 None →
+> Geometry ON ≈ OFF → 实验无意义，因此**不伪造 experiment**。
+> 资产就绪后按 §3 流程一键执行。
 
 ---
 
@@ -24,7 +26,8 @@
 
 ## 2. 未跑实验的原因（诚实）
 
-1. **资产缺失**：`data/maps/` 空（de_dust2/de_mirage 的 .nav/.vphys 未放置）。
+1. **资产缺失**：`data/maps/` 空（de_dust2/de_mirage 的 .nav/.tri 未放置；
+   自动获取当前失败：awpycs.com 镜像不可达 + 本机无 CS2）。
 2. **无资产 → 双跑等价**：AwpyGeometryProvider 无资产时全部返回 None，
    Geometry ON 与 OFF 的 episode 输出一致 → diff 全为 unchanged → 无信息。
    跑了会产出**无意义且误导**的结果，故不跑。
@@ -33,9 +36,9 @@
 ## 3. 资产就绪后执行流程
 
 ```powershell
-# 1. 放置资产 + 注册 metadata（见 MANUAL_ASSET_SETUP.md）
-python scripts\setup_geometry_assets.py --map de_dust2 --nav data\maps\de_dust2.nav --vphys data\maps\de_dust2.vphys
-python scripts\setup_geometry_assets.py --map de_mirage --nav data\maps\de_mirage.nav --vphys data\maps\de_mirage.vphys
+# 1. 自动获取（推荐；失败则见 MANUAL_ASSET_SETUP.md 手动放置）
+python scripts\setup_geometry_assets.py --auto
+python scripts\setup_geometry_assets.py --check   # 期望 [OK]
 # 2. 配置启用 awpy
 # config geometry_provider=awpy, geometry_nav_dir=data/maps, geometry_tri_dir=data/maps
 # 3. 跑 A/B（6 场 3 de_dust2 + 3 de_mirage，或先单图）
