@@ -46,6 +46,37 @@ def _model_intelligence(cfg: Config) -> dict:
                 "note": f"{type(e).__name__}: {e}"}
 
 
+def _match_info(db: DB, match_id: str) -> dict | None:
+    """Human-readable match context for list items (demo file / map / time).
+
+    The UI must not identify a match by round+tick alone; every item gets a
+    match_info block so it can show 地图 · 比赛时间 · demo文件 instead.
+    """
+    m = db.get_match(match_id) if match_id else None
+    if not m:
+        return None
+    demo_path = m.get("demo_path") or ""
+    return {
+        "demo_id": m["demo_id"],
+        "demo_file": os.path.basename(demo_path) or m["demo_id"],
+        "map_name": m.get("map_name"),
+        "parsed_at": m.get("parsed_at"),
+        "rounds_total": m.get("rounds_total"),
+    }
+
+
+def _attach_match_info(db: DB, items: list) -> None:
+    """Attach match_info to every item carrying a match_id (in place)."""
+    cache: dict = {}
+    for it in items:
+        mid = it.get("match_id")
+        if not mid:
+            continue
+        if mid not in cache:
+            cache[mid] = _match_info(db, mid)
+        it["match_info"] = cache[mid]
+
+
 def _json(handler, obj, code=200):
     body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
     handler.send_response(code)
@@ -123,18 +154,21 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                 e["player_id"] = str(e["player_id"])
                                 e["candidates"] = db.get_decision_candidates(e["id"])
                                 e.pop("duel_state_sequence", None)
+                            _attach_match_info(db, eps)
                             _json(self, {"decisions": eps})
                         elif endpoint == "engagements":
                             eps = db.get_decision_episodes(
                                 match_id=demo_id, player_id=steam_id, limit=500)
-                            _json(self, {"engagements": [
+                            engs = [
                                 {"episode_id": e["id"], "round": e["round"],
                                  "tick": e["anchor_tick"],
                                  "player_id": str(e["player_id"]),
                                  "method": (e.get("engagement_method") or {}).get("method"),
                                  "evaluation": e.get("engagement_evaluation"),
                                  "weapon_matchup": e.get("weapon_matchup")}
-                                for e in eps if e.get("engagement_method")]})
+                                for e in eps if e.get("engagement_method")]
+                            _attach_match_info(db, engs)
+                            _json(self, {"engagements": engs})
                         elif endpoint == "patterns":
                             from .episode_patterns import cluster_episodes
                             from .calibration import calibration_stats
@@ -145,6 +179,7 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                                           calibration=cal)
                             for m in moments:
                                 m["player_id"] = str(m["player_id"])
+                            _attach_match_info(db, moments)
                             _json(self, {"moments": moments})
                         elif endpoint == "calibration":
                             from .calibration import sample_calibration_set
@@ -152,6 +187,7 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                                              player_id=steam_id)
                             for s in samples:
                                 s["player_id"] = str(s["player_id"])
+                            _attach_match_info(db, samples)
                             _json(self, {"samples": samples})
                         else:
                             _json(self, {"error": "unknown player endpoint"}, 404)
@@ -181,6 +217,7 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     samples.sort(key=sort_key)
                     for s in samples:
                         s["player_id"] = str(s["player_id"])
+                    _attach_match_info(db, samples)
                     _json(self, {"session": samples,
                                  "ground_truth": calibration_stats(db, cfg)})
                 elif path == "/api/calibration-stats":
@@ -198,6 +235,7 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     if not samples and mid and sid:
                         samples = sample_calibration_set(db, cfg, mid,
                                                          player_id=int(sid))
+                    _attach_match_info(db, samples)
                     _json(self, {"samples": samples})
                 elif path == "/api/threshold-sensitivity":
                     from .calibration import threshold_sensitivity
@@ -214,9 +252,12 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     if mid and sid:
                         moments = rank_review_moments(db, cfg, mid, int(sid),
                                                       calibration=cal)
+                        _attach_match_info(db, moments)
                         _json(self, {"moments": moments})
                     else:
-                        _json(self, {"moments": db.get_review_moments(limit=50)})
+                        moments = db.get_review_moments(limit=50)
+                        _attach_match_info(db, moments)
+                        _json(self, {"moments": moments})
                 elif path.startswith("/api/dps/"):
                     rest = path[len("/api/dps/"):]
                     if rest.endswith("/what-if"):
@@ -265,7 +306,9 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                  "measurements": db.get_measurements(tid),
                                  "history": db.get_target_history(tid)})
                 elif path == "/api/review":
-                    _json(self, {"review": db.get_review_queue(limit=30)})
+                    review = db.get_review_queue(limit=30)
+                    _attach_match_info(db, review)
+                    _json(self, {"review": review})
                 elif path == "/api/annotations/stats":
                     from .annotation import annotation_stats
                     _json(self, annotation_stats(db))
@@ -287,6 +330,7 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                         # summary); the detail endpoint returns it fully
                         seq = e.pop("duel_state_sequence", None)
                         e["duel_summary"] = {"n_states": len(seq)} if seq else None
+                    _attach_match_info(db, eps)
                     _json(self, {"decisions": eps})
                 elif path.startswith("/api/decisions/"):
                     ep_id = path[len("/api/decisions/"):]
@@ -310,6 +354,7 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                         ep = db.get_decision_episode(ep_id)
                         if not ep:
                             return _json(self, {"error": "episode not found"}, 404)
+                        _attach_match_info(db, [ep])
                         _json(self, {"decision": ep})
                 elif path == "/api/decision-stats":
                     from collections import Counter
