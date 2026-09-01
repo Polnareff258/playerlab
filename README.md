@@ -195,6 +195,14 @@ python3 -m playerlab.cli calibration-review <sample_id> YES|NO|UNSURE --fp-reaso
 
 ## 运行（MVP 实现）
 
+**一键启动（推荐）**：双击 `start.bat`（或 `start.bat 8123` 指定端口）——
+自动检测 Python、检查/安装 demoparser2、启动 UI+API 并打开浏览器。
+
+```powershell
+start.bat                 # 一键启动（默认 8123 端口，自动开浏览器）
+start.bat 9000            # 指定端口
+```
+
 ```powershell
 cd playerlab\core
 python3 -m playerlab.cli ingest "C:\path\to\demo.dem"   # 解析 + 检测 DP + 入库
@@ -209,7 +217,7 @@ python3 -m playerlab.cli coverage                        # 相似状态覆盖报
 python3 -m playerlab.cli backtest                        # 留一比赛校准/Brier
 python3 -m playerlab.cli qa --out ..\backtest\qa.json   # 检索 QA 批次导出
 python3 -m playerlab.cli ablation                        # 特征消融
-python3 -m playerlab.cli api --port 8123                 # 本地 UI + API
+python3 -m playerlab.cli api --port 8123                 # 本地 UI + API（--open 自动开浏览器）
 # 浏览器打开 http://127.0.0.1:8123
 ```
 

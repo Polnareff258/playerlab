@@ -114,6 +114,8 @@ def main(argv=None):
     p_api = sub.add_parser("api", help="start local UI+API")
     p_api.add_argument("--port", type=int, default=8123)
     p_api.add_argument("--host", default="127.0.0.1")
+    p_api.add_argument("--open", action="store_true",
+                       help="open the browser automatically after startup")
 
     args = parser.parse_args(argv)
     cfg.db_path = args.db
@@ -456,6 +458,12 @@ def main(argv=None):
         from .api import serve
         ui_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), "ui")
+        if args.open:
+            import threading
+            import webbrowser
+            url = f"http://{args.host}:{args.port}"
+            threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+            print(f"opening {url} in the default browser...")
         serve(cfg.db_path, ui_dir, port=args.port, host=args.host)
     print(f"[done in {time.time() - t0:.1f}s]")
 
