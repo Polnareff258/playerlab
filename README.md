@@ -1,4 +1,4 @@
-# PlayerLab V1.3.1 — Alternative Evidence + Engagement & Duel Execution
+# PlayerLab V1.3.2 — Calibration, Ground Truth & Player-Centric UX
 
 本地优先的 CS2 Demo 分析项目。核心目标：
 
@@ -11,17 +11,26 @@ V1 优先证明一条链真实、可靠、可追溯地工作：
 DecisionPoint → GameState → Similar State Retrieval → Counterfactual Comparison
 ```
 
-V1.2.1 升级：**Context Grounding**（KnownState 序列 + InformationStrength/Direction
+V1.2.1 升级：**Context Grounding**（KnownState + InformationStrength/Direction
 + Tradeability + 保守责任归因 + Review Quota）+ **Optional Model Intelligence**
 （GameModelProvider / Null / CSNetProvider，CS-NET 作为可选后端）。
 
-V1.3 升级：**DecisionEpisode & Local Alternatives** —— 「该不该打」（Strategic），
-Macro 解释 Micro，Alternatives 先于批评，Feasibility 先于推荐。
+V1.3 升级：**DecisionEpisode & Local Alternatives**（Strategic）。
 
-V1.3.1 升级：**Engagement & Duel Execution Foundation** —— 第一次形成完整分析链：
-「该不该打」（Strategic）→「应该怎么打」（Engagement Method）→「实际是怎么打出来的」
-（Duel Execution）→「这些动作造成了什么影响」（MovementEffect）。三层评价分离 +
-EvidenceSufficiency gate + 4 个 execution primitives + MovementEffect 双面描述。
+V1.3.1 升级：**Engagement & Duel Execution Foundation**（Strategic → Engagement
+→ Execution 三层 + MovementEffect）。
+
+V1.3.2 升级：**Calibration, Ground Truth & Player-Centric UX** ——
+
+> PlayerLab 不应该是「给你展示一大堆 CS 数据」，而是
+> **「告诉你这一场你最值得回看的几个决定」**。
+
+Focus Player 一等概念（Remembered user / player-scoped API / steam_id 精度修复）
++ Player Match Overview（无 0-100 总分）+ **Top Review Moments**（Moment first，
+actionability before frequency，校准门控）+ **Calibration Lab**（分层采样、
+保留 original prediction、precision/calibration state、TrainingTarget 校准门控）
++ **GeometryProvider** 接口（Null + awpy 可选）。详见
+[docs/V1_3_2_RESULTS.md](docs/V1_3_2_RESULTS.md)。
 
 ## 与 DAK Studio 的关系
 
@@ -122,6 +131,20 @@ python3 -m playerlab.cli model-intelligence --provider csnet
 python3 -m playerlab.cli decision-stats      # 三层 eval + engagement methods + execution primitives 分布
 python3 -m playerlab.cli decision-show <episode_id>  # 完整卡片（strategic/engagement/execution/movement_effect）
 # UI Decisions 页：WHY FIGHT / HOW YOU FOUGHT / HOW YOU EXECUTED 单卡片（spec §117）
+```
+
+### V1.3.2 — Calibration, Ground Truth & Player-Centric UX（已实现）
+
+在 V1.3.1 之上增加**玩家中心 + 校准层**：FocusPlayerContext（Remembered user "This is me ★" + player-scoped API，steam_id 字符串化防 JS 精度截断）、Player Match Overview（Good/Mixed/Needs Review，无 0-100 总分）、**Top Review Moments**（Top 5：weighted factors + why_selected + positive 槽位 + 校准门控）、**Calibration Lab**（分层采样 330 样本、单场景 Yes/No/Unsure + FP 原因分类、precision/confirmation/calibration state、TrainingTarget 校准门控 UNCALIBRATED→PAUSED）、GeometryProvider 接口（Null + awpy 可选）。详见 [docs/V1_3_2_RESULTS.md](docs/V1_3_2_RESULTS.md) / [docs/CALIBRATION_RESULTS.md](docs/CALIBRATION_RESULTS.md) / [docs/PLAYER_UX_RESULTS.md](docs/PLAYER_UX_RESULTS.md) / [docs/GEOMETRY_SPIKE.md](docs/GEOMETRY_SPIKE.md)。
+
+```powershell
+python3 -m playerlab.cli focus-player --match <id> --steam <sid> --remember  # This is me
+python3 -m playerlab.cli player-overview <match> <steam>      # Player Match Overview
+python3 -m playerlab.cli moments <match> <steam>              # Top Review Moments
+python3 -m playerlab.cli calibration <match>                  # 生成校准样本（PENDING_REVIEW）
+python3 -m playerlab.cli calibration-stats                    # detector precision/state
+python3 -m playerlab.cli calibration-review <sample_id> YES|NO|UNSURE --fp-reason ...
+# UI: Matches → 选 Focus Player → Overview → Top 5 Moments → Calibration Lab
 ```
 
 ## 阶段状态

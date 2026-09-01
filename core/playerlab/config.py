@@ -81,6 +81,11 @@ class Config:
     model_provider: str = "null"     # "null" | "csnet" (optional backend)
     csnet_models_dir: str = ""       # e.g. external/cs-net/cs-net-models
     csnet_repo_dir: str = ""         # e.g. external/cs-net
+    # --- V1.3.2 optional geometry (PART F) ---
+    geometry_provider: str = "null"  # "null" | "awpy"
+    geometry_nav_dir: str = ""       # .nav assets dir
+    geometry_tri_dir: str = ""       # .vphys assets dir
+    review_moments_top_n: int = 5    # default Top Review Moments per player
 
     # --- V1.2 context & intent ---
     context_window_ticks: int = 256      # ~4 s lookback for TemporalContext

@@ -77,6 +77,25 @@ def main(argv=None):
     p_dpref = sub.add_parser("decision-preference", help="submit a pairwise preference")
     p_dpref.add_argument("episode_id")
     p_dpref.add_argument("choice", help="A / B / BOTH / NEITHER / UNSURE")
+    # V1.3.2 player-centric + calibration (PART A/D/E)
+    p_focus = sub.add_parser("focus-player", help="set/get Focus Player")
+    p_focus.add_argument("--match", default="", help="match id")
+    p_focus.add_argument("--steam", type=int, default=None, help="steam id")
+    p_focus.add_argument("--remember", action="store_true", help="persist as 'This is me'")
+    p_ov = sub.add_parser("player-overview", help="player match overview")
+    p_ov.add_argument("match")
+    p_ov.add_argument("steam", type=int)
+    p_mom = sub.add_parser("moments", help="Top Review Moments for a player")
+    p_mom.add_argument("match")
+    p_mom.add_argument("steam", type=int)
+    p_cal = sub.add_parser("calibration", help="generate calibration samples")
+    p_cal.add_argument("match")
+    p_cal.add_argument("--player", type=int, default=None)
+    sub.add_parser("calibration-stats", help="detector calibration metrics")
+    p_crev = sub.add_parser("calibration-review", help="review one calibration sample")
+    p_crev.add_argument("sample_id")
+    p_crev.add_argument("label", help="YES / NO / UNSURE")
+    p_crev.add_argument("--fp-reason", default="", help="false positive reason")
     p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
     p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
     p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
@@ -318,6 +337,57 @@ def main(argv=None):
                     "human_choice": args.choice, "human_confidence": 0.6,
                     "reason_code": "OTHER"})
                 print(f"preference saved: {a} vs {b} -> {args.choice}")
+    elif args.cmd == "focus-player":
+        from .db import DB
+        from .focus import default_focus, set_focus
+        db = DB(cfg.db_path)
+        if args.steam is not None:
+            if not args.match:
+                from .focus import remember_user
+                remember_user(db, args.steam, "")
+                print(f"remembered steam {args.steam} as user")
+            else:
+                ctx = set_focus(db, args.match, args.steam, persist=args.remember)
+                print(json.dumps(ctx.to_dict(), ensure_ascii=False))
+        else:
+            ctx = default_focus(db, args.match or "")
+            print(json.dumps(ctx.to_dict(), ensure_ascii=False))
+    elif args.cmd == "player-overview":
+        from .db import DB
+        from .moments import player_match_overview
+        db = DB(cfg.db_path)
+        print(json.dumps(player_match_overview(db, cfg, args.match, args.steam),
+                         ensure_ascii=False, indent=1, default=str))
+    elif args.cmd == "moments":
+        from .db import DB
+        from .moments import rank_review_moments
+        from .calibration import detector_calibration_map
+        db = DB(cfg.db_path)
+        cal = detector_calibration_map(db, cfg)
+        moments = rank_review_moments(db, cfg, args.match, args.steam, calibration=cal)
+        for m in moments:
+            print(f"score={m['review_score']:.2f} {'GOOD' if m['is_positive'] else '  '} "
+                  f"{m['primary_reason']:<42} r{m.get('round')} t{m.get('tick')} | {m['why_selected']}")
+    elif args.cmd == "calibration":
+        from .db import DB
+        from .calibration import sample_calibration_set
+        db = DB(cfg.db_path)
+        samples = sample_calibration_set(db, cfg, args.match, player_id=args.player)
+        print(f"generated {len(samples)} calibration samples (PENDING_REVIEW)")
+        from collections import Counter
+        print("by detector:", dict(Counter(s["detector_type"] for s in samples)))
+    elif args.cmd == "calibration-stats":
+        from .db import DB
+        from .calibration import calibration_stats
+        db = DB(cfg.db_path)
+        print(json.dumps(calibration_stats(db, cfg), ensure_ascii=False, indent=1,
+                         default=str))
+    elif args.cmd == "calibration-review":
+        from .db import DB
+        db = DB(cfg.db_path)
+        db.mark_calibration_reviewed(args.sample_id, args.label, 0.8,
+                                     args.fp_reason)
+        print(f"reviewed {args.sample_id} -> {args.label} (original prediction kept)")
     elif args.cmd == "annotations":
         from .db import DB
         from .annotation import annotation_stats, export_annotations

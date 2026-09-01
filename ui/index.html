@@ -60,13 +60,14 @@
 </head>
 <body>
 <header>
-  <h1>PlayerLab <span>V1.3.1</span></h1>
-  <span>Engagement + Duel Execution</span>
+  <h1>PlayerLab <span>V1.3.2</span></h1>
+  <span>Player first · Moment first</span>
   <nav>
     <button id="tab-focus" class="on" onclick="goto('focus')">Focus</button>
     <button id="tab-decisions" onclick="goto('decisions')">Decisions</button>
     <button id="tab-matches" onclick="goto('matches')">Matches</button>
     <button id="tab-review" onclick="goto('review')">Review</button>
+    <button id="tab-calibration" onclick="location.hash='#/calibration'">Calibration</button>
   </nav>
 </header>
 <div id="app"></div>
@@ -164,16 +165,105 @@ async function feedback(targetId, label){
   } catch(e){ toast(e.message); }
 }
 
-/* ---------------- Matches ---------------- */
+/* ---------------- Matches (Player-Centric Match Flow) ---------------- */
 async function renderMatches(el){
   const { matches } = await api("/api/matches");
   let html = `<h2>Demo 库</h2><div class="card">` +
     (matches.length ? `<table><tr><th>Match</th><th>Map</th><th>Rounds</th><th>解析时间</th></tr>` +
       matches.map(m=>`<tr class="click" onclick="location.hash='#/match/${m.demo_id}'">
-        <td class="mono">${esc(m.demo_id)}</td><td>${esc(m.map_name)}</td>
+        <td class="mono">${esc(m.demo_id.slice(0,12))}…</td><td>${esc(m.map_name)}</td>
         <td>${m.rounds_total}</td><td class="muted">${esc(m.parsed_at)}</td></tr>`).join("") + `</table>`
       : `<span class="muted">还没有 demo：python3 -m playerlab.cli alpha &lt;demo.dem&gt;</span>`) + `</div>`;
   el.innerHTML = html;
+}
+
+/* ---------------- Match entry: select Focus Player (§6-§7) ---------------- */
+async function renderMatch(el, matchId){
+  const m = await api("/api/matches/"+matchId);
+  const match = m.match;
+  let html = `<h2>${esc(match.map_name)} <span class="muted">${match.rounds_total} rounds</span></h2>`;
+  // focus player selector (never assume owner, PART A §5)
+  const f = await api("/api/focus-player?match="+matchId).catch(()=>({focus:null}));
+  const currentFocus = f.focus && f.focus.steam_id ? f.focus.steam_id : null;
+  html += `<div class="card">
+    <div class="row"><b>FOCUS PLAYER</b>
+      <select id="focus-sel" onchange="selectFocus('${matchId}')">
+        <option value="">— 选择要分析的玩家 —</option>
+        ${m.players.map(p=>`<option value="${p.steam_id}" ${p.steam_id===currentFocus?"selected":""}>
+          ${esc(p.display_name)} ${p.is_user?"★":""} <span class="muted">(team ${p.team})</span></option>`).join("")}
+      </select>
+      <button class="btn" onclick="rememberFocus('${matchId}')">This is me ★</button>
+    </div>
+    <div class="muted mono" style="font-size:11px;margin-top:4px">★ = remembered user (default focus)</div>
+  </div>`;
+  if (currentFocus){
+    html += `<div id="player-view"></div>`;
+    el.innerHTML = html;
+    return renderPlayerView(el, matchId, currentFocus);
+  }
+  el.innerHTML = html;
+}
+async function selectFocus(matchId){
+  const sid = $("#focus-sel").value;
+  if (!sid) return;
+  await api("/api/focus-player", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({match_id:matchId, steam_id:sid, remember:false})});
+  location.hash = "#/match/"+matchId;
+}
+async function rememberFocus(matchId){
+  const sid = $("#focus-sel").value;
+  if (!sid) return toast("先选择玩家");
+  await api("/api/remember-player", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({match_id:matchId, steam_id:sid, remember:true})});
+  toast("已记住：This is me ★");
+  location.hash = "#/match/"+matchId;
+}
+
+/* ---------------- Player Match Overview + Top Review Moments (§7-§9, §34) ---------------- */
+async function renderPlayerView(el, matchId, steamId){
+  const [ov, mom] = await Promise.all([
+    api("/api/matches/"+matchId+"/players/"+steamId+"/overview").catch(()=>({overview:null})),
+    api("/api/matches/"+matchId+"/players/"+steamId+"/review-moments").catch(()=>({moments:[]}))
+  ]);
+  const o = ov.overview || {};
+  let html = `<div class="card"><div class="row">
+      <span class="chip ${o.summary==="MOSTLY REASONABLE"?"ok":o.summary==="NEEDS REVIEW"?"MEDIUM":""}">${esc(o.summary||"—")}</span>
+      <span class="muted">${o.episodes||0} decision episodes</span></div>`;
+  if (o.strengths && o.strengths.length) html += `<div class="why"><b>Strong:</b> ${esc(o.strengths[0].family.replace("_"," "))} (good ${Math.round((o.strengths[0].good_share||0)*100)}%)</div>`;
+  if (o.needs_review && o.needs_review.length) html += `<div class="why"><b>Needs review:</b> ${esc(o.needs_review[0].family.replace("_"," "))} (good ${Math.round((o.needs_review[0].good_share||0)*100)}%)</div>`;
+  html += `<div class="muted mono" style="font-size:10px">${esc((o.explainable||{}).note||"")}</div></div>`;
+  html += `<h3>TOP REVIEW MOMENTS <span class="muted">(最值得回看的瞬间)</span></h3>`;
+  const momList = mom.moments || [];
+  if (!momList.length) html += `<div class="card"><span class="muted">暂无 moments（先运行 alpha 管线）</span></div>`;
+  for (const mm of momList){
+    const d = await api("/api/decisions/"+mm.episode_id).catch(()=>({decision:null}));
+    const ep = d.decision || {};
+    const em = ep.engagement_method || {};
+    const me = ep.movement_effect || {};
+    const prims = (ep.execution_primitives||[]).join(", ") || "—";
+    html += `<div class="card">
+      <div class="row">
+        <span class="chip ${mm.is_positive?"ok":mm.review_score>=0.6?"MEDIUM":""}">${mm.is_positive?"GOOD EXAMPLE":esc(mm.primary_reason||"")}</span>
+        <span class="mono muted">r${mm.round||ep.round} t${mm.tick||ep.anchor_tick}</span>
+        <span class="muted">score ${mm.review_score}</span>
+      </div>
+      <div class="why"><b>WHY YOU FOUGHT</b>: ${esc(ep.strategic_evaluation||"—")}</div>
+      ${ep.engagement_evaluation?`<div class="why"><b>HOW YOU FOUGHT</b>: ${esc(em.method||"—")} · ${esc(ep.engagement_evaluation||"—")}</div>`:""}
+      ${ep.execution_evaluation?`<div class="why"><b>HOW YOU EXECUTED</b>: ${esc(ep.execution_evaluation||"—")} · issues: ${esc(prims)}</div>`:""}
+      <div class="muted" style="font-size:12px">Why selected: ${esc(mm.why_selected||"")}</div>
+      <div class="muted mono" style="font-size:10px">evidence ${esc(mm.evidence_sufficiency||"—")} · actionability ${esc(mm.actionability||"—")}</div>
+      <div class="row" style="margin-top:6px">
+        <button class="btn" onclick="reviewCal('${matchId}','${steamId}')">校准这个判断</button>
+        <button class="btn" onclick="location.hash='#/decisions'">View all decisions</button>
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+async function reviewCal(matchId, steamId){
+  const { samples } = await api("/api/matches/"+matchId+"/players/"+steamId+"/calibration").catch(()=>({samples:[]}));
+  if (!samples.length) return toast("暂无校准样本");
+  location.hash = "#/calibration";
 }
 
 /* ---------------- Review (人工标注) ---------------- */
@@ -321,9 +411,87 @@ async function renderDecisions(el){
 
 window.addEventListener("hashchange", () => {
   const h = location.hash;
-  if (h.startsWith("#/match")) return renderMatches($("#app"));
+  if (h.startsWith("#/match/")) {
+    const matchId = h.slice("#/match/".length);
+    const el = $("#app"); el.innerHTML = `<span class="muted">loading…</span>`;
+    return renderMatch(el, matchId).catch(e => el.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`);
+  }
+  if (h.startsWith("#/calibration")) return renderCalibration($("#app"));
   goto(h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
 });
+
+/* ---------------- Calibration Review Lab (PART D §20-§22) ---------------- */
+async function renderCalibration(el){
+  const { samples } = await api("/api/calibration-samples").catch(async () => {
+    // fallback: gather from first match's players
+    const { matches } = await api("/api/matches");
+    if (!matches.length) return {samples: []};
+    const mid = matches[0].demo_id;
+    const m = await api("/api/matches/"+mid);
+    const p = m.players[0];
+    return api("/api/matches/"+mid+"/players/"+p.steam_id+"/calibration");
+  });
+  const pending = (samples||[]).filter(s=>s.review_status==="pending");
+  const stats = await api("/api/calibration-stats").catch(()=>({detectors:{}}));
+  let html = `<h2>CALIBRATION LAB <span class="muted">(校准判断：先确认系统说得对)</span></h2>`;
+  // detector stats overview
+  const dets = stats.detectors || {};
+  html += `<div class="card"><table><tr><th>Detector</th><th>Reviewed</th><th>Confirmed</th><th>Precision</th><th>State</th></tr>`;
+  for (const [det, s] of Object.entries(dets)){
+    html += `<tr><td>${esc(det)}</td><td>${s.reviewed}</td><td>${s.confirmed}</td>
+      <td>${s.precision==null?"—":(s.precision*100).toFixed(0)+"%"}</td>
+      <td><span class="chip ${s.calibration_state==="CALIBRATED"?"ok":s.calibration_state==="UNRELIABLE"?"MEDIUM":""}">${esc(s.calibration_state)}</span></td></tr>`;
+  }
+  if (!Object.keys(dets).length) html += `<tr><td colspan=5 class="muted">暂无校准样本（进入比赛 → 选择玩家 → 校准这个判断）</td></tr>`;
+  html += `</table><div class="muted mono" style="font-size:10px">${esc(stats.ground_truth_note||"")}</div></div>`;
+  // one sample at a time
+  html += `<h3>REVIEW <span class="muted">(${pending.length} pending)</span></h3>`;
+  if (!pending.length) html += `<div class="card"><span class="muted">全部已 review 或暂无样本</span></div>`;
+  else {
+    const s = pending[0];
+    const reasons = await api("/api/calibration-review-fp-reasons", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify({detector: s.detector_type})}
+    ).catch(()=>({reasons:["OTHER","INSUFFICIENT_CONTEXT"]}));
+    html += `<div class="card">
+      <div class="row"><span class="chip">${esc(s.detector_type)}</span>
+        <span class="mono muted">r${s.round} t${s.tick}</span>
+        <span class="muted">conf ${s.predicted_confidence ?? "—"} · evidence ${esc(s.evidence_sufficiency||"—")}</span></div>
+      <div class="why">System says: <b>${esc(s.predicted_label)}</b> (${esc(s.sample_stratum||"general")})</div>
+      <div class="row" style="margin-top:8px">
+        <span class="muted">Was this a real problem?</span>
+        <button class="btn" onclick="calReview('${s.id}','YES')">Yes</button>
+        <button class="btn" onclick="calReview('${s.id}','NO')">No</button>
+        <button class="btn" onclick="calReview('${s.id}','UNSURE')">Unsure</button>
+      </div>
+      <div class="row" style="margin-top:6px" id="fp-${s.id}">
+        <select id="fpsel-${s.id}" style="max-width:260px">
+          ${reasons.reasons.map(r=>`<option>${esc(r)}</option>`).join("")}
+        </select>
+        <button class="btn" onclick="calReviewFP('${s.id}')">提交 No + 原因</button>
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+async function calReview(sampleId, label){
+  try {
+    await api("/api/calibration/"+sampleId+"/review", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({human_label:label, human_confidence:0.8})});
+    toast("校准已保存（original prediction 保留）"); goto("review");
+    location.hash = "#/calibration";
+  } catch(e){ toast(e.message); }
+}
+async function calReviewFP(sampleId){
+  const reason = $("#fpsel-"+sampleId)?.value || "OTHER";
+  try {
+    await api("/api/calibration/"+sampleId+"/review", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({human_label:"NO", human_confidence:0.8,
+                            false_positive_reason:reason})});
+    toast("FP 原因已保存"); location.hash = "#/calibration";
+  } catch(e){ toast(e.message); }
+}
 goto("focus");
 </script>
 </body>

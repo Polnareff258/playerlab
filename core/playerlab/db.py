@@ -219,6 +219,54 @@ CREATE INDEX IF NOT EXISTS idx_dc_episode ON decision_candidates (episode_id);
 CREATE INDEX IF NOT EXISTS idx_dev_episode ON decision_evidence (episode_id);
 """
 
+# V1.3.2 player-centric + calibration schema (schema_version = 7).
+V132_SCHEMA = """
+CREATE TABLE IF NOT EXISTS player_profiles (
+    steam_id INTEGER PRIMARY KEY,
+    display_name TEXT, is_user INTEGER DEFAULT 0,
+    created_at TEXT, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS calibration_samples (
+    id TEXT PRIMARY KEY,
+    match_id TEXT, player_id INTEGER, round INTEGER, tick INTEGER, episode_id TEXT,
+    detector_type TEXT,
+    predicted_label TEXT, predicted_confidence REAL,
+    evidence_sufficiency TEXT,
+    model_version TEXT, rule_version TEXT,
+    sample_stratum TEXT,
+    review_status TEXT DEFAULT 'pending',
+    human_label TEXT, human_confidence REAL,
+    false_positive_reason TEXT, notes TEXT,
+    reviewed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS review_moments (
+    id TEXT PRIMARY KEY,
+    match_id TEXT, player_id INTEGER, episode_id TEXT,
+    review_score REAL,
+    actionability TEXT, evidence_sufficiency TEXT,
+    impact REAL, recurrence REAL, training_relevance REAL,
+    is_positive INTEGER DEFAULT 0,
+    primary_reason TEXT,
+    why_selected TEXT,
+    computed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS app_preferences (
+    key TEXT PRIMARY KEY, value TEXT, updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cs_detector ON calibration_samples (detector_type, review_status);
+CREATE INDEX IF NOT EXISTS idx_cs_match ON calibration_samples (match_id, player_id);
+CREATE INDEX IF NOT EXISTS idx_rm_match ON review_moments (match_id, player_id, review_score);
+"""
+
+# Additive columns for existing tables (v7)
+_ADD_COLUMNS_V7 = [
+    ("human_annotations", "player_id", "INTEGER"),
+    ("human_annotations", "detector_type", "TEXT"),
+    ("human_annotations", "evidence_sufficiency", "TEXT"),
+    ("human_annotations", "sample_stratum", "TEXT"),
+    ("players", "is_user", "INTEGER DEFAULT 0"),
+]
+
 
 class DB:
     def __init__(self, path: str):
@@ -291,6 +339,14 @@ class DB:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         if current < 6:
             self.conn.execute("UPDATE schema_version SET version=6")
+        # V1.3.2: player-centric + calibration tables (v7)
+        if current < 7:
+            self.conn.executescript(V132_SCHEMA)
+            for table, col, typ in _ADD_COLUMNS_V7:
+                cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+                if col not in cols:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            self.conn.execute("UPDATE schema_version SET version=7")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -781,8 +837,14 @@ class DB:
                 params[k] = jd(v)
         for k in ("evidence_sufficiency", "strategic_evaluation",
                   "engagement_evaluation", "execution_evaluation",
-                  "decision_domain", "engagement_id", "duel_phase"):
+                  "decision_domain", "engagement_id", "duel_phase",
+                  "state_value_before", "state_value_after"):
             params.setdefault(k, None)
+        for k in ("confidence", "extractor_version", "context_version",
+                  "rule_version", "model_provider_version", "geometry_version",
+                  "computed_at"):
+            params.setdefault(k, 0.0 if k == "confidence" else
+                              ("2026-01-01" if k == "computed_at" else "v1.3.1-1"))
         for k in ("engagement_context", "engagement_method", "movement_effect",
                   "execution_primitives", "duel_state_sequence", "weapon_matchup",
                   "information_advantage"):
@@ -928,3 +990,129 @@ class DB:
     def get_episode_links(self, episode_id: str) -> list[dict]:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM decision_episode_links WHERE episode_id=?", (episode_id,))]
+
+    # ---- V1.3.2 player profiles + preferences ----
+    def upsert_player_profile(self, steam_id: int, display_name: str,
+                              is_user: bool = False) -> dict:
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        self.conn.execute(
+            """INSERT OR REPLACE INTO player_profiles
+               (steam_id, display_name, is_user, created_at, updated_at)
+               VALUES (?,?,?,COALESCE((SELECT created_at FROM player_profiles
+                                        WHERE steam_id=?), ?), ?)""",
+            (int(steam_id), display_name, 1 if is_user else 0,
+             int(steam_id), now, now))
+        self.conn.commit()
+        return {"steam_id": int(steam_id), "display_name": display_name,
+                "is_user": bool(is_user)}
+
+    def get_player_profile(self, steam_id: int) -> dict | None:
+        r = self.conn.execute("SELECT * FROM player_profiles WHERE steam_id=?",
+                              (int(steam_id),)).fetchone()
+        return dict(r) if r else None
+
+    def get_user_profile(self) -> dict | None:
+        r = self.conn.execute("SELECT * FROM player_profiles WHERE is_user=1 "
+                              "ORDER BY updated_at DESC LIMIT 1").fetchone()
+        return dict(r) if r else None
+
+    def list_player_profiles(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM player_profiles ORDER BY updated_at DESC")]
+
+    def set_preference(self, key: str, value: str):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_preferences (key, value, updated_at) "
+            "VALUES (?,?,?)", (key, value, time.strftime("%Y-%m-%dT%H:%M:%S")))
+        self.conn.commit()
+
+    def get_preference(self, key: str) -> str | None:
+        r = self.conn.execute("SELECT value FROM app_preferences WHERE key=?",
+                              (key,)).fetchone()
+        return r["value"] if r else None
+
+    # ---- V1.3.2 calibration samples ----
+    def upsert_calibration_sample(self, s: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO calibration_samples
+               (id, match_id, player_id, round, tick, episode_id, detector_type,
+                predicted_label, predicted_confidence, evidence_sufficiency,
+                model_version, rule_version, sample_stratum, review_status,
+                human_label, human_confidence, false_positive_reason, notes,
+                reviewed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (s["id"], s.get("match_id"), s.get("player_id"), s.get("round"),
+             s.get("tick"), s.get("episode_id"), s["detector_type"],
+             s.get("predicted_label"), s.get("predicted_confidence"),
+             s.get("evidence_sufficiency"), s.get("model_version"),
+             s.get("rule_version"), s.get("sample_stratum", "general"),
+             s.get("review_status", "pending"), s.get("human_label"),
+             s.get("human_confidence"), s.get("false_positive_reason"),
+             s.get("notes"), s.get("reviewed_at")))
+        self.conn.commit()
+
+    def get_calibration_samples(self, detector_type=None, review_status=None,
+                                match_id=None, player_id=None, limit=1000):
+        q = "SELECT * FROM calibration_samples"
+        conds, args = [], []
+        if detector_type:
+            conds.append("detector_type=?"); args.append(detector_type)
+        if review_status:
+            conds.append("review_status=?"); args.append(review_status)
+        if match_id:
+            conds.append("match_id=?"); args.append(match_id)
+        if player_id:
+            conds.append("player_id=?"); args.append(player_id)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        return [dict(r) for r in self.conn.execute(
+            q + f" ORDER BY round, tick LIMIT {limit}", args)]
+
+    def mark_calibration_reviewed(self, sample_id: str, human_label: str,
+                                  human_confidence: float, fp_reason: str,
+                                  notes: str = ""):
+        self.conn.execute(
+            """UPDATE calibration_samples SET review_status='reviewed',
+               human_label=?, human_confidence=?, false_positive_reason=?,
+               notes=?, reviewed_at=? WHERE id=?""",
+            (human_label, human_confidence, fp_reason, notes,
+             time.strftime("%Y-%m-%dT%H:%M:%S"), sample_id))
+        self.conn.commit()
+
+    def delete_calibration_samples(self, match_id: str):
+        self.conn.execute("DELETE FROM calibration_samples WHERE match_id=?",
+                          (match_id,))
+        self.conn.commit()
+
+    # ---- V1.3.2 review moments ----
+    def replace_review_moments(self, match_id: str, player_id: int,
+                               moments: list[dict]):
+        self.conn.execute(
+            "DELETE FROM review_moments WHERE match_id=? AND player_id=?",
+            (match_id, player_id))
+        for m in moments:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO review_moments
+                   (id, match_id, player_id, episode_id, review_score,
+                    actionability, evidence_sufficiency, impact, recurrence,
+                    training_relevance, is_positive, primary_reason,
+                    why_selected, computed_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (m["id"], match_id, player_id, m["episode_id"], m["review_score"],
+                 m.get("actionability"), m.get("evidence_sufficiency"),
+                 m.get("impact"), m.get("recurrence"), m.get("training_relevance"),
+                 1 if m.get("is_positive") else 0, m.get("primary_reason"),
+                 m.get("why_selected"), m.get("computed_at")))
+        self.conn.commit()
+
+    def get_review_moments(self, match_id=None, player_id=None, limit=50):
+        q = "SELECT * FROM review_moments"
+        conds, args = [], []
+        if match_id:
+            conds.append("match_id=?"); args.append(match_id)
+        if player_id:
+            conds.append("player_id=?"); args.append(player_id)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        return [dict(r) for r in self.conn.execute(
+            q + " ORDER BY review_score DESC LIMIT ?", args + [limit])]

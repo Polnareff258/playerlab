@@ -100,10 +100,16 @@ def generate_targets(db: DB, cfg: Config, bottlenecks: list[dict]) -> list[dict]
 
 
 def generate_targets_from_episodes(db: DB, cfg: Config,
-                                   episode_patterns: list[dict]) -> list[dict]:
+                                   episode_patterns: list[dict],
+                                   calibration_map: dict | None = None) -> list[dict]:
     """V1.3 (spec §40-§41, §43-§44): TrainingTargets from repeated Decision
-    Episode patterns (clustering over action family x advantage state x
-    context bucket), with Actionability gate (spec §64)."""
+    Episode patterns, with Actionability gate (spec §64).
+
+    V1.3.2 calibration gate (PART E §29): a pattern whose detector state is
+    UNCALIBRATED / EXPERIMENTAL must NOT auto-generate a HIGH-confidence
+    target — it is demoted to a 'possible issue — needs calibration' note.
+    """
+    calibration_map = calibration_map or {}
     created = []
     active = [t for t in db.get_targets() if t["status"] in ("ACTIVE", "IMPROVING")]
     active_ids = {t["pattern_type"] for t in active}
@@ -116,6 +122,23 @@ def generate_targets_from_episodes(db: DB, cfg: Config,
             continue
         baseline = pat["violation_rate"]
         goal = round(min(baseline, max(0.001, baseline * 0.5)), 3)
+        det_state = calibration_map.get(pid, "UNCALIBRATED")
+        if det_state in ("UNCALIBRATED", "EXPERIMENTAL"):
+            created.append({
+                "target_id": pid, "pattern_type": pid,
+                "name": pat["name"], "category": "Possible Issue",
+                "status": "PAUSED", "progress": 0.0,
+                "baseline": baseline, "goal": goal,
+                "confidence": 0.3,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "next_match_cue": pat.get("cue") or {},
+                "source_pattern_ids": [pid],
+                "supporting_evidence": pat["breakdown"],
+                "macro_reason": pat.get("macro_reason"),
+                "calibration_note": f"detector {det_state} — needs calibration "
+                                    "before becoming a HIGH-confidence target",
+            })
+            continue
         spec = {
             "name": pat["name"],
             "category": "Macro Decision" if pat["family"] == "ADVANTAGE_PRESERVATION"
@@ -136,7 +159,8 @@ def generate_targets_from_episodes(db: DB, cfg: Config,
             "measurement_definition": spec["measure"],
             "measurement_window": cfg.validation_window_matches,
             "status": "ACTIVE", "progress": 0.0,
-            "confidence": pat["confidence"],
+            "confidence": min(pat["confidence"], 0.9) if det_state == "CALIBRATED"
+                           else pat["confidence"] * 0.7,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "next_match_cue": spec["cue"],
             "source_pattern_ids": [pid],

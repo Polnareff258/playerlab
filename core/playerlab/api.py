@@ -75,15 +75,130 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     _json(self, {"ok": True, "db": db_path})
                 elif path == "/api/matches":
                     _json(self, {"matches": db.list_matches()})
+                elif path == "/api/focus-player":
+                    # current focus + remember (POST handled in do_POST)
+                    from .focus import default_focus
+                    mid = q.get("match", [None])[0]
+                    if mid:
+                        _json(self, {"focus": default_focus(db, mid).to_dict()})
+                    else:
+                        _json(self, {"focus": None,
+                                     "user": db.get_user_profile()})
+                elif path.startswith("/api/players/") and path.endswith("/matches"):
+                    sid = int(path[len("/api/players/"):-len("/matches")])
+                    eps = db.get_decision_episodes(player_id=sid, limit=2000)
+                    matches = {}
+                    for e in eps:
+                        matches.setdefault(e["match_id"], {"episodes": 0})
+                        matches[e["match_id"]]["episodes"] += 1
+                    _json(self, {"steam_id": sid, "matches": matches,
+                                 "match_count": len(matches),
+                                 "profile": db.get_player_profile(sid)})
                 elif path.startswith("/api/matches/"):
-                    demo_id = path[len("/api/matches/"):]
-                    match = db.get_match(demo_id)
-                    if not match:
-                        return _json(self, {"error": "match not found"}, 404)
-                    _json(self, {"match": match,
-                                 "rounds": db.get_rounds(demo_id),
-                                 "players": db.get_players(demo_id),
-                                 "decision_points": db.get_dps(demo_id)})
+                    rest = path[len("/api/matches/"):]
+                    if "/players/" in rest:
+                        demo_id, sub = rest.split("/players/", 1)
+                        match = db.get_match(demo_id)
+                        if not match:
+                            return _json(self, {"error": "match not found"}, 404)
+                        parts = sub.split("/")
+                        steam_id = int(parts[0])
+                        endpoint = parts[1] if len(parts) > 1 else "overview"
+                        player = next((p for p in db.get_players(demo_id)
+                                       if int(p["steamid"]) == steam_id), None)
+                        if not player:
+                            return _json(self, {"error": "player not in match"}, 404)
+                        from .focus import players_of_match, remember_user
+                        from .moments import (rank_review_moments,
+                                              player_match_overview)
+                        from .calibration import detector_calibration_map
+                        cal = detector_calibration_map(db, cfg)
+                        if endpoint == "overview":
+                            _json(self, {"overview": player_match_overview(
+                                db, cfg, demo_id, steam_id)})
+                        elif endpoint == "decisions":
+                            eps = db.get_decision_episodes(
+                                match_id=demo_id, player_id=steam_id, limit=500)
+                            for e in eps:
+                                e["player_id"] = str(e["player_id"])
+                                e["candidates"] = db.get_decision_candidates(e["id"])
+                                e.pop("duel_state_sequence", None)
+                            _json(self, {"decisions": eps})
+                        elif endpoint == "engagements":
+                            eps = db.get_decision_episodes(
+                                match_id=demo_id, player_id=steam_id, limit=500)
+                            _json(self, {"engagements": [
+                                {"episode_id": e["id"], "round": e["round"],
+                                 "tick": e["anchor_tick"],
+                                 "player_id": str(e["player_id"]),
+                                 "method": (e.get("engagement_method") or {}).get("method"),
+                                 "evaluation": e.get("engagement_evaluation"),
+                                 "weapon_matchup": e.get("weapon_matchup")}
+                                for e in eps if e.get("engagement_method")]})
+                        elif endpoint == "patterns":
+                            from .episode_patterns import cluster_episodes
+                            from .calibration import calibration_stats
+                            pats = cluster_episodes(db, cfg, match_id=demo_id)
+                            _json(self, {"patterns": pats})
+                        elif endpoint == "review-moments":
+                            moments = rank_review_moments(db, cfg, demo_id, steam_id,
+                                                          calibration=cal)
+                            for m in moments:
+                                m["player_id"] = str(m["player_id"])
+                            _json(self, {"moments": moments})
+                        elif endpoint == "calibration":
+                            from .calibration import sample_calibration_set
+                            samples = sample_calibration_set(db, cfg, demo_id,
+                                                             player_id=steam_id)
+                            for s in samples:
+                                s["player_id"] = str(s["player_id"])
+                            _json(self, {"samples": samples})
+                        else:
+                            _json(self, {"error": "unknown player endpoint"}, 404)
+                    else:
+                        demo_id = rest
+                        match = db.get_match(demo_id)
+                        if not match:
+                            return _json(self, {"error": "match not found"}, 404)
+                        from .focus import players_of_match
+                        _json(self, {"match": match,
+                                     "rounds": db.get_rounds(demo_id),
+                                     "players": players_of_match(db, demo_id),
+                                     "decision_points": db.get_dps(demo_id)})
+                elif path == "/api/calibration-stats":
+                    from .calibration import calibration_stats
+                    det = q.get("detector", [None])[0]
+                    _json(self, calibration_stats(db, cfg, detector_type=det))
+                elif path == "/api/calibration-samples":
+                    from .calibration import sample_calibration_set
+                    det = q.get("detector", [None])[0]
+                    mid = q.get("match", [None])[0]
+                    sid = q.get("player", [None])[0]
+                    samples = db.get_calibration_samples(
+                        detector_type=det, match_id=mid,
+                        player_id=int(sid) if sid else None, limit=500)
+                    if not samples and mid and sid:
+                        samples = sample_calibration_set(db, cfg, mid,
+                                                         player_id=int(sid))
+                    _json(self, {"samples": samples})
+                elif path == "/api/threshold-sensitivity":
+                    from .calibration import threshold_sensitivity
+                    det = q.get("detector", [""])[0]
+                    vals = [float(v) for v in q.get("values", [])] or [0.5, 0.6, 0.7, 0.8]
+                    _json(self, {"detector": det,
+                                 "experiments": threshold_sensitivity(db, cfg, det, vals)})
+                elif path == "/api/review-moments":
+                    mid = q.get("match", [None])[0]
+                    sid = q.get("player", [None])[0]
+                    from .moments import rank_review_moments
+                    from .calibration import detector_calibration_map
+                    cal = detector_calibration_map(db, cfg)
+                    if mid and sid:
+                        moments = rank_review_moments(db, cfg, mid, int(sid),
+                                                      calibration=cal)
+                        _json(self, {"moments": moments})
+                    else:
+                        _json(self, {"moments": db.get_review_moments(limit=50)})
                 elif path.startswith("/api/dps/"):
                     rest = path[len("/api/dps/"):]
                     if rest.endswith("/what-if"):
@@ -249,6 +364,37 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                         "human_confidence": float(body.get("human_confidence", 0.6)),
                         "reason_code": body.get("reason_code", "OTHER")})
                     _json(self, {"saved": True, "episode_id": ep_id, "a": a, "b": b})
+                elif path == "/api/focus-player" or path == "/api/remember-player":
+                    from .focus import set_focus, remember_user
+                    match_id = body.get("match_id")
+                    steam_id = int(body.get("steam_id"))
+                    persist = path == "/api/remember-player" or bool(body.get("remember"))
+                    if not match_id:
+                        # remember by steam_id only (cross-match default)
+                        name = body.get("display_name", "")
+                        remember_user(db, steam_id, name)
+                        _json(self, {"saved": True, "is_user": True, "steam_id": steam_id})
+                    else:
+                        ctx = set_focus(db, match_id, steam_id, persist=persist)
+                        _json(self, {"focus": ctx.to_dict()})
+                elif path.startswith("/api/calibration/") and path.endswith("/review"):
+                    sample_id = path[len("/api/calibration/"):-len("/review")]
+                    from .calibration import PREAIM_FP_REASONS, MOVING_SHOT_FP_REASONS
+                    human_label = body.get("human_label", "UNSURE")  # YES/NO/UNSURE
+                    conf = float(body.get("human_confidence", 0.7))
+                    fp = body.get("false_positive_reason", "")
+                    db.mark_calibration_reviewed(sample_id, human_label, conf, fp,
+                                                 body.get("notes", ""))
+                    _json(self, {"saved": True, "sample_id": sample_id,
+                                 "human_label": human_label})
+                elif path == "/api/calibration-review-fp-reasons":
+                    det = body.get("detector", "")
+                    if det == "PREAIM_ERROR":
+                        _json(self, {"reasons": list(PREAIM_FP_REASONS)})
+                    elif det == "MOVING_SHOT":
+                        _json(self, {"reasons": list(MOVING_SHOT_FP_REASONS)})
+                    else:
+                        _json(self, {"reasons": ["OTHER", "INSUFFICIENT_CONTEXT"]})
                 else:
                     _json(self, {"error": "not found"}, 404)
             except Exception as e:  # noqa: BLE001
