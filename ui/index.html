@@ -142,6 +142,8 @@ const I18N = {
     annSaved: "标注已保存",
     prefSaved: "偏好已保存",
     decisionPrefSaved: "决策候选偏好已保存",
+    answeredCount: "个问题已回答",
+    confirmSubmit: "确认提交（全部回答后移除）",
     // Decisions
     decisions: "DECISIONS（决策片段）",
     noDecisions: "暂无 DecisionEpisode（运行 alpha 管线后生成）",
@@ -227,6 +229,8 @@ const I18N = {
     annSaved: "Annotation saved",
     prefSaved: "Preference saved",
     decisionPrefSaved: "Decision preference saved",
+    answeredCount: "questions answered",
+    confirmSubmit: "Confirm & submit (removes after all answered)",
     decisions: "DECISIONS",
     noDecisions: "No DecisionEpisodes yet (run the alpha pipeline first)",
     youWere: "You were", infoNeed: "info need", riskTolerance: "risk tolerance",
@@ -512,6 +516,11 @@ async function reviewCal(matchId, steamId){
 }
 
 /* ---------------- Review（人工标注） ---------------- */
+// 每个 review item 有多个问题（判断对吗 / Intent 更接近 / 候选比较 /
+// Decision 是…），答案先收集在本地下标，全部回答后点「确认提交」再移除
+let reviewAnswers = {};   // { [reviewId]: { question: answer, ... } }
+let reviewComments = {};  // { [reviewId]: { reason: string, comment: string } }
+
 async function renderReview(el){
   const g = beginRender();
   const { review } = await api("/api/review");
@@ -520,90 +529,104 @@ async function renderReview(el){
   for (const it of review){
     const isIntent = it.item_type === "intent";
     const isDecision = it.item_type === "decision_episode";
+    const ans = reviewAnswers[it.id] || {};
+    const sel = (q, v) => ans[q] === v ? "on" : "";
+    const qBtn = (q, v, label, fn) => `<button class="btn ${sel(q,v)}" onclick="${fn}('${it.id}','${q}','${v}')">${label}</button>`;
+    // Q1 判断对吗
+    const lookBtns = `
+      <div class="row" style="margin-top:8px">
+        <span class="muted" style="font-size:12px">${t("doesThisLookRight")}</span>
+        ${qBtn("look","CORRECT",t("correct"),"ansLook")}
+        ${qBtn("look","PARTIALLY_CORRECT",t("partially"),"ansLook")}
+        ${qBtn("look","INCORRECT",t("wrong"),"ansLook")}
+        ${qBtn("look","UNSURE",t("unsure"),"ansLook")}
+        <select id="rc-${it.id}" style="max-width:180px">
+          ${["OTHER","TEAM_CALL","MISSING_AUDIO","MISSING_VISUAL_CONTEXT","WRONG_TIMING",
+             "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option>${c}</option>`).join("")}
+        </select>
+        <input id="cm-${it.id}" placeholder="${t("comment")}" style="max-width:180px">
+      </div>`;
+    // Q2/Q3 按类型
     const intentBtns = isIntent ? `
       <div class="row" style="margin-top:8px">
         <span class="muted" style="font-size:12px">${t("intentCloser")}</span>
         ${["ROTATE","SOFT_ROTATE","REPOSITION","GATHER_INFO","HOLD","OTHER","UNSURE"].map(l=>
-          `<button class="btn" onclick="annotateType('${it.id}','intent','${l}')">${l}</button>`).join("")}
+          qBtn("intent",l,l,"ansIntent")).join("")}
       </div>` : "";
     const prefBtns = isIntent && it.candidates && it.candidates.length >= 2 ? `
       <div class="row" style="margin-top:6px">
         <span class="muted" style="font-size:12px">${t("preferCandidate")}</span>
-        <button class="btn" onclick="pref('${it.id}','${it.candidates[0]}')">${it.candidates[0]}</button>
-        <button class="btn" onclick="pref('${it.id}','${it.candidates[1]}')">${it.candidates[1]}</button>
+        ${it.candidates.slice(0,3).map(c=>qBtn("cand",c,c,"ansCand")).join("")}
       </div>` : "";
     const decisionBtns = isDecision ? `
       <div class="row" style="margin-top:8px">
         <span class="muted" style="font-size:12px">${t("decisionWas")}</span>
-        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">${t("correct")}</button>
-        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">${t("wrong")}</button>
-        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">${t("unsure")}</button>
+        ${qBtn("decision","CORRECT",t("correct"),"ansDecision")}
+        ${qBtn("decision","INCORRECT",t("wrong"),"ansDecision")}
+        ${qBtn("decision","UNSURE",t("unsure"),"ansDecision")}
       </div>
       <div class="row" style="margin-top:6px">
         <span class="muted" style="font-size:12px">${t("candidateCompare")}</span>
-        ${(it.candidates||[]).slice(0,3).map(c=>
-          `<button class="btn" onclick="decisionPref('${it.event_id}','${c}')">${c}</button>`).join("")}
+        ${(it.candidates||[]).slice(0,3).map(c=>qBtn("cand",c,c,"ansCand")).join("")}
       </div>` : "";
-    html += `<div class="rev">
+    // 必答问题清单 + 确认按钮
+    const required = ["look"].concat(isIntent ? ["intent"] : []).concat(isDecision ? ["decision"] : []);
+    const allAnswered = required.every(q => ans[q]);
+    const answeredCount = required.filter(q => ans[q]).length;
+    const confirmBtn = `
+      <div class="row" style="margin-top:10px">
+        <span class="muted" style="font-size:12px">${answeredCount}/${required.length} ${t("answeredCount")}</span>
+        <button class="btn" ${allAnswered?"":"disabled style='opacity:.5'"} onclick="submitReviewItem('${it.id}','${isIntent}','${isDecision}')">
+          ${t("confirmSubmit")}${allAnswered?"":" ✔"}</button>
+      </div>`;
+    html += `<div class="rev" id="rev-${it.id}">
       <div class="row"><span class="chip">${esc(it.item_type)}</span>
         <span class="mono muted">${matchTag(it.match_info)}</span>
         <span class="mono muted">${playerTag(it.player_info)} · ${inRound(it.round, it.in_round_seconds, it.tick)}</span>
         <span class="muted">priority ${it.priority}</span></div>
       <div class="why">${t("system")}: <b>${esc(it.model_prediction)}</b> · ${t("confidence")} ${it.model_confidence} ·
         ${esc(it.rationale)}</div>
-      <div class="row">
-        <span class="muted" style="font-size:12px">${t("doesThisLookRight")}</span>
-        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">${t("correct")}</button>
-        <button class="btn" onclick="annotate('${it.id}','PARTIALLY_CORRECT','')">${t("partially")}</button>
-        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">${t("wrong")}</button>
-        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">${t("unsure")}</button>
-        <select id="rc-${it.id}" style="max-width:180px">
-          ${["OTHER","TEAM_CALL","MISSING_AUDIO","MISSING_VISUAL_CONTEXT","WRONG_TIMING",
-             "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option>${c}</option>`).join("")}
-        </select>
-        <input id="cm-${it.id}" placeholder="${t("comment")}" style="max-width:180px">
-      </div>${intentBtns}${prefBtns}${decisionBtns}
+      ${lookBtns}${intentBtns}${prefBtns}${decisionBtns}${confirmBtn}
     </div>`;
   }
   const stats = await api("/api/annotations/stats").catch(()=>({}));
   if (stats.total) html += `<div class="card"><h3>${t("annStats")}</h3><pre>${esc(JSON.stringify(stats,null,1))}</pre></div>`;
   commitRender(el, g, html);
 }
-async function annotate(reviewId, label){
+function ansLook(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {look: v}); renderReview($("#app")); }
+function ansIntent(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {intent: v}); renderReview($("#app")); }
+function ansDecision(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {decision: v}); renderReview($("#app")); }
+function ansCand(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {cand: v}); renderReview($("#app")); }
+async function submitReviewItem(reviewId, isIntent, isDecision){
+  const ans = reviewAnswers[reviewId] || {};
+  const rc = $("#rc-"+reviewId)?.value || "OTHER";
+  const cm = $("#cm-"+reviewId)?.value || "";
   try {
-    const rc = $("#rc-"+reviewId)?.value || "OTHER";
-    const cm = $("#cm-"+reviewId)?.value || "";
-    await api("/api/review/"+reviewId+"/annotation", {method:"POST",
+    const jobs = [];
+    // Q1 判断对吗
+    if (ans.look) jobs.push(api("/api/review/"+reviewId+"/annotation", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({annotation_type:"behavior_detection", human_label:label,
-                            human_confidence:0.8, reason_code:rc, optional_comment:cm})});
-    toast(t("annSaved")); goto("review");
-  } catch(e){ toast(e.message); }
-}
-async function annotateType(reviewId, type, label){
-  try {
-    await api("/api/review/"+reviewId+"/annotation", {method:"POST",
+      body: JSON.stringify({annotation_type:"behavior_detection", human_label:ans.look,
+                            human_confidence:0.8, reason_code:rc, optional_comment:cm})}));
+    // Q2 intent
+    if (isIntent === "true" && ans.intent) jobs.push(api("/api/review/"+reviewId+"/annotation", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({annotation_type:type, human_label:label,
-                            human_confidence:0.7, reason_code:"OTHER"})});
-    toast(type+" "+t("annSaved")); goto("review");
-  } catch(e){ toast(e.message); }
-}
-async function pref(reviewId, choice){
-  try {
-    await api("/api/review/"+reviewId+"/preference", {method:"POST",
+      body: JSON.stringify({annotation_type:"intent", human_label:ans.intent,
+                            human_confidence:0.7, reason_code:"OTHER"})}));
+    // Q3 decision was
+    if (isDecision === "true" && ans.decision) jobs.push(api("/api/review/"+reviewId+"/annotation", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({human_choice:choice, human_confidence:0.6, reason_code:"OTHER"})});
-    toast(t("prefSaved")); goto("review");
-  } catch(e){ toast(e.message); }
-}
-async function decisionPref(episodeId, action){
-  try {
-    await api("/api/decisions/"+episodeId+"/preference", {method:"POST",
+      body: JSON.stringify({annotation_type:"behavior_detection", human_label:ans.decision,
+                            human_confidence:0.7, reason_code:"OTHER"})}));
+    // 候选比较（intent / decision 共有）
+    if (ans.cand) jobs.push(api("/api/review/"+reviewId+"/preference", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({candidate_a:action, human_choice:"A",
-                            human_confidence:0.6, reason_code:"OTHER"})});
-    toast(t("decisionPrefSaved")); goto("review");
+      body: JSON.stringify({human_choice:ans.cand, human_confidence:0.6, reason_code:"OTHER"})}));
+    await Promise.all(jobs);
+    await api("/api/review/"+reviewId+"/complete", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+    delete reviewAnswers[reviewId];
+    toast(t("annSaved"));
+    goto("review");
   } catch(e){ toast(e.message); }
 }
 

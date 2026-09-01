@@ -86,6 +86,14 @@ def _player_info(db: DB, match_id: str, steam_id: int | None) -> dict | None:
 def _round_start_tick(db: DB, match_id: str, rnum: int | None) -> int | None:
     if not match_id or rnum is None:
         return None
+    # round 0 = first real round (platform warmup is not recorded); it starts
+    # at the first recorded tick, which we approximate with the earliest
+    # decision/anchor. Fall back to the smallest round_start when absent.
+    if rnum == 0:
+        for r in db.get_rounds(match_id):
+            if r["round"] == 1:
+                # round 0 runs from the demo start up to round 1's start
+                return 0
     for r in db.get_rounds(match_id):
         if r["round"] == rnum:
             return r["start_tick"]
@@ -439,8 +447,14 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                         body.get("human_label", ""),
                         float(body.get("human_confidence", 0.7)),
                         body.get("reason_code", "OTHER"),
-                        body.get("optional_comment", ""))
+                        body.get("optional_comment", ""),
+                        mark_done=bool(body.get("mark_done", False)))
                     _json(self, {"annotation": ann})
+                elif path.startswith("/api/review/") and path.endswith("/complete"):
+                    # all questions on this item answered -> remove from queue
+                    rid = path[len("/api/review/"):-len("/complete")]
+                    from .annotation import complete_review
+                    _json(self, {"completed": complete_review(db, rid)})
                 elif path.startswith("/api/review/") and path.endswith("/preference"):
                     rid = path[len("/api/review/"):-len("/preference")]
                     item = next((r for r in db.get_review_queue(status="pending", limit=1000)
@@ -454,8 +468,7 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                         body.get("candidates", []), body.get("human_choice", ""),
                         float(body.get("human_confidence", 0.6)),
                         body.get("reason_code", "OTHER"))
-                    if item:
-                        db.mark_review_done(rid)
+                    # item stays in queue until the frontend completes it
                     _json(self, {"preference": rec})
                 elif path.startswith("/api/decisions/") and path.endswith("/preference"):
                     ep_id = path[len("/api/decisions/"):-len("/preference")]

@@ -400,10 +400,9 @@ def test_calibration_confirmed_moving_shot_reasonable():
     assert _confirmed("ACTUAL_INACCURATE_MOVING_SHOT") is True
 
 
-def test_warmup_round0_excluded_from_queries():
-    """Round 0 is platform 练枪/热身 — not a real match round. Decision data
-    queries must never surface it (generation skips it, queries filter it)."""
-    from playerlab.ingest import _filename_matchtime
+def test_warmup_round0_is_real_first_round():
+    """Round 0 is the first real match round (platform warmup is NOT recorded
+    into the demo). Round-0 decision data must be surfaced normally."""
     db = DB(":memory:")
     db.upsert_match({"demo_id": "w1", "demo_path": "", "map_name": "de_dust2",
                      "tickrate": 64, "player_count": 10, "rounds_total": 3,
@@ -411,40 +410,38 @@ def test_warmup_round0_excluded_from_queries():
                      "parser_version": "test"})
     db.replace_rounds("w1", [{"round": 1, "start_tick": 5000, "end_tick": 10000,
                               "winner": "CT", "reason": "ct_killed"}])
-    # warmup episode (round 0) and real episode (round 1) both in the table
-    from playerlab.episode import build_episode  # noqa: F401  (kept importable)
     db.conn.execute(
         "INSERT INTO decision_episodes (id, match_id, round, player_id, family, "
         "anchor_tick, confidence, extractor_version, context_version, rule_version, "
         "model_provider_version, geometry_version, computed_at) VALUES "
-        "('warmup-ep', 'w1', 0, 1, 'CONTACT_RESPONSE', 100, 0.6, 'v1', 'v1', 'v1', 'null', 'null', '2026-01-01'), "
+        "('round0-ep', 'w1', 0, 1, 'CONTACT_RESPONSE', 100, 0.6, 'v1', 'v1', 'v1', 'null', 'null', '2026-01-01'), "
         "('real-ep', 'w1', 1, 1, 'CONTACT_RESPONSE', 6000, 0.6, 'v1', 'v1', 'v1', 'null', 'null', '2026-01-01')")
     eps = db.get_decision_episodes(match_id="w1")
-    assert all(e["round"] >= 1 for e in eps)
-    assert any(e["id"] == "real-ep" for e in eps)
-    assert not any(e["id"] == "warmup-ep" for e in eps)
-    # review queue: warmup row hidden
+    ids = {e["id"] for e in eps}
+    assert "round0-ep" in ids, "round-0 episode must be surfaced (first real round)"
+    assert "real-ep" in ids
+    # review queue: round-0 row visible
     db.conn.execute(
         "INSERT INTO review_queue (id, match_id, round, tick, item_type, priority, "
-        "status) VALUES ('warmup-rq', 'w1', 0, 100, 'intent', 0.9, 'pending'), "
+        "status) VALUES ('round0-rq', 'w1', 0, 100, 'intent', 0.9, 'pending'), "
         "('real-rq', 'w1', 1, 6000, 'intent', 0.8, 'pending')")
     rq = db.get_review_queue(limit=20)
-    assert all(r["round"] >= 1 for r in rq)
-    assert any(r["id"] == "real-rq" for r in rq)
-    assert not any(r["id"] == "warmup-rq" for r in rq)
-    # calibration samples: warmup row hidden
+    rq_ids = {r["id"] for r in rq}
+    assert "round0-rq" in rq_ids
+    assert "real-rq" in rq_ids
+    # calibration samples: round-0 row visible
     db.conn.execute(
         "INSERT INTO calibration_samples (id, match_id, player_id, round, tick, "
         "detector_type, predicted_label, review_status, label_source, "
         "pipeline_validation) VALUES "
-        "('warmup-cal', 'w1', 1, 0, 100, 'PREAIM_ERROR', 'PREAIM_ERROR', 'pending', "
+        "('round0-cal', 'w1', 1, 0, 100, 'PREAIM_ERROR', 'PREAIM_ERROR', 'pending', "
         "'HUMAN', 'NOT_TESTED'), "
         "('real-cal', 'w1', 1, 1, 6000, 'PREAIM_ERROR', 'PREAIM_ERROR', 'pending', "
         "'HUMAN', 'NOT_TESTED')")
     cals = db.get_calibration_samples(match_id="w1")
-    assert all(s["round"] >= 1 for s in cals)
-    assert any(s["id"] == "real-cal" for s in cals)
-    assert not any(s["id"] == "warmup-cal" for s in cals)
+    cal_ids = {s["id"] for s in cals}
+    assert "round0-cal" in cal_ids
+    assert "real-cal" in cal_ids
 
 
 def test_detect_match_time_filename():

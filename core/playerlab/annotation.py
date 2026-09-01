@@ -244,8 +244,15 @@ def submit_annotation(db: DB, review_id: str | None = None,
                       human_label: str = "", human_confidence: float = 0.7,
                       reason_code: str = "OTHER", optional_comment: str = "",
                       event_id: str = "", dp_id: str = "", match_id: str = "",
-                      round: int = 0, tick: int = 0) -> dict:
-    """Record a human annotation, preserving the model prediction separately."""
+                      round: int = 0, tick: int = 0,
+                      mark_done: bool = False) -> dict:
+    """Record a human annotation, preserving the model prediction separately.
+
+    mark_done=False (default): the review item stays in the queue so the
+    user can answer the other questions on the same item (判断对吗 /
+    Decision 是 / 候选比较 are submitted one by one, then the frontend
+    calls complete_review to remove the item once all are answered).
+    """
     if reason_code not in REASON_CODES:
         raise ValueError(f"invalid reason code: {reason_code}")
     if annotation_type not in ANNOTATION_TYPES:
@@ -258,7 +265,8 @@ def submit_annotation(db: DB, review_id: str | None = None,
             event_id, dp_id = item.get("event_id") or "", item.get("dp_id") or ""
             model_prediction = model_prediction or item["model_prediction"]
             model_confidence = model_confidence if model_confidence is not None else item["model_confidence"]
-            db.mark_review_done(review_id)
+            if mark_done:
+                db.mark_review_done(review_id)
     ann = {
         "id": uuid.uuid4().hex[:16],
         "match_id": match_id, "round": round, "tick": tick,
@@ -273,6 +281,16 @@ def submit_annotation(db: DB, review_id: str | None = None,
     }
     db.insert_annotation(ann)
     return ann
+
+
+def complete_review(db: DB, review_id: str) -> bool:
+    """Mark a review item done once all its questions are answered."""
+    item = next((r for r in db.get_review_queue(status="pending", limit=1000)
+                 if r["id"] == review_id), None)
+    if not item:
+        return False
+    db.mark_review_done(review_id)
+    return True
 
 
 def submit_preference(db: DB, match_id: str, round: int, tick: int, event_id: str,

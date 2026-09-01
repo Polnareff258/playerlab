@@ -66,10 +66,6 @@ def detect_for_player(demo: IngestedDemo, steamid: int, cfg: Config,
         tc1 = ep[-1]["t"]
         if tc0 not in recs:
             continue
-        # warmup (round 0 — platform 练枪/热身) is not a real match round:
-        # it must not produce decision points
-        if demo.round_of_tick(tc0) < 1:
-            continue
         # opponent = other party with most events
         counts = {}
         for e in ep:
