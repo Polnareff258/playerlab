@@ -400,9 +400,11 @@ def test_calibration_confirmed_moving_shot_reasonable():
     assert _confirmed("ACTUAL_INACCURATE_MOVING_SHOT") is True
 
 
-def test_warmup_round0_is_real_first_round():
-    """Round 0 is the first real match round (platform warmup is NOT recorded
-    into the demo). Round-0 decision data must be surfaced normally."""
+def test_warmup_round0_excluded_real_rounds_1based():
+    """Round 0 = warmup/knife (before the first real round, platform-
+    dependent: some platforms record it, others don't). Real rounds are
+    numbered 1..N from our own counter (cs-demo-manager approach), so
+    round-0 data is never surfaced and round numbering is always 1-based."""
     db = DB(":memory:")
     db.upsert_match({"demo_id": "w1", "demo_path": "", "map_name": "de_dust2",
                      "tickrate": 64, "player_count": 10, "rounds_total": 3,
@@ -418,18 +420,18 @@ def test_warmup_round0_is_real_first_round():
         "('real-ep', 'w1', 1, 1, 'CONTACT_RESPONSE', 6000, 0.6, 'v1', 'v1', 'v1', 'null', 'null', '2026-01-01')")
     eps = db.get_decision_episodes(match_id="w1")
     ids = {e["id"] for e in eps}
-    assert "round0-ep" in ids, "round-0 episode must be surfaced (first real round)"
+    assert "round0-ep" not in ids, "warmup/knife round 0 must not be surfaced"
     assert "real-ep" in ids
-    # review queue: round-0 row visible
+    # review queue: round-0 row hidden
     db.conn.execute(
         "INSERT INTO review_queue (id, match_id, round, tick, item_type, priority, "
         "status) VALUES ('round0-rq', 'w1', 0, 100, 'intent', 0.9, 'pending'), "
         "('real-rq', 'w1', 1, 6000, 'intent', 0.8, 'pending')")
     rq = db.get_review_queue(limit=20)
     rq_ids = {r["id"] for r in rq}
-    assert "round0-rq" in rq_ids
+    assert "round0-rq" not in rq_ids
     assert "real-rq" in rq_ids
-    # calibration samples: round-0 row visible
+    # calibration samples: round-0 row hidden
     db.conn.execute(
         "INSERT INTO calibration_samples (id, match_id, player_id, round, tick, "
         "detector_type, predicted_label, review_status, label_source, "
@@ -440,8 +442,40 @@ def test_warmup_round0_is_real_first_round():
         "'HUMAN', 'NOT_TESTED')")
     cals = db.get_calibration_samples(match_id="w1")
     cal_ids = {s["id"] for s in cals}
-    assert "round0-cal" in cal_ids
+    assert "round0-cal" not in cal_ids
     assert "real-cal" in cal_ids
+
+
+def test_platform_aware_round_parsing():
+    """Different platforms record rounds differently (完美世界 starts at 1,
+    other CS2 demos have a warmup round 0 with NaN winner/reason). Real
+    rounds must be numbered 1..N from our own counter (cs-demo-manager)."""
+    from playerlab.ingest import _is_warmup_pair
+    assert _is_warmup_pair({"winner": float("nan"), "reason": float("nan")}) is True
+    assert _is_warmup_pair({"winner": None, "reason": "t_killed"}) is True
+    assert _is_warmup_pair({"winner": "CT", "reason": "t_killed"}) is False
+    # simulate both platform shapes as raw pairs
+    def build(raw_pairs):
+        rounds, idx = [], 0
+        for p in raw_pairs:
+            if _is_warmup_pair(p):
+                continue
+            idx += 1
+            rounds.append(idx)
+        return rounds
+    # perfectworld: no warmup, starts at 1
+    pw = [{"start_tick": 0, "end_tick": 3479, "winner": "CT", "reason": "t_killed"},
+          {"start_tick": 4000, "end_tick": 8000, "winner": "T", "reason": "ct_killed"}]
+    assert build(pw) == [1, 2]
+    # g161: warmup pair first (round_end NaN winner/reason)
+    g161 = [{"start_tick": 70, "end_tick": 70, "winner": float("nan"), "reason": float("nan")},
+            {"start_tick": 2888, "end_tick": 6683, "winner": "CT", "reason": "t_killed"},
+            {"start_tick": 7131, "end_tick": 13151, "winner": "CT", "reason": "t_killed"}]
+    assert build(g161) == [1, 2]
+    # 5e style: no round 0 at all (starts at 1, no warmup marker)
+    five = [{"start_tick": 100, "end_tick": 4000, "winner": "CT", "reason": "bomb_defused"},
+            {"start_tick": 5000, "end_tick": 9000, "winner": "T", "reason": "ct_killed"}]
+    assert build(five) == [1, 2]
 
 
 def test_detect_match_time_filename():

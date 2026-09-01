@@ -152,6 +152,7 @@ const I18N = {
     observed: "OBSERVED（实际动作）",
     commitment: "承诺状态", intent: "意图",
     whyFight: "WHY FIGHT（为何接战）",
+    sightingContext: "遇敌时状态（走路/切刀/背身）",
     strategic: "战略层",
     infoAdvantage: "信息优势",
     selfAccuracy: "自身精度代价", oppTracking: "敌方追踪难度",
@@ -238,6 +239,7 @@ const I18N = {
     observed: "OBSERVED",
     commitment: "commitment", intent: "intent",
     whyFight: "WHY FIGHT",
+    sightingContext: "player state when enemy appeared",
     strategic: "strategic",
     infoAdvantage: "info advantage",
     selfAccuracy: "self-accuracy", oppTracking: "opponent tracking",
@@ -517,90 +519,117 @@ async function reviewCal(matchId, steamId){
 
 /* ---------------- Review（人工标注） ---------------- */
 // 每个 review item 有多个问题（判断对吗 / Intent 更接近 / 候选比较 /
-// Decision 是…），答案先收集在本地下标，全部回答后点「确认提交」再移除
+// Decision 是…），答案先收集在本地下标，全部回答后点「确认提交」再移除。
+// 回答只更新「当前片段」的卡片（renderReviewItem），其他片段不受影响。
 let reviewAnswers = {};   // { [reviewId]: { question: answer, ... } }
 let reviewComments = {};  // { [reviewId]: { reason: string, comment: string } }
+
+function reviewItemHtml(it){
+  const isIntent = it.item_type === "intent";
+  const isDecision = it.item_type === "decision_episode";
+  const ans = reviewAnswers[it.id] || {};
+  const com = reviewComments[it.id] || {};
+  const sel = (q, v) => ans[q] === v ? "on" : "";
+  const qBtn = (q, v, label, fn) => `<button class="btn ${sel(q,v)}" onclick="${fn}('${it.id}','${q}','${v}')">${label}</button>`;
+  // Q1 判断对吗
+  const lookBtns = `
+    <div class="row" style="margin-top:8px">
+      <span class="muted" style="font-size:12px">${t("doesThisLookRight")}</span>
+      ${qBtn("look","CORRECT",t("correct"),"ansLook")}
+      ${qBtn("look","PARTIALLY_CORRECT",t("partially"),"ansLook")}
+      ${qBtn("look","INCORRECT",t("wrong"),"ansLook")}
+      ${qBtn("look","UNSURE",t("unsure"),"ansLook")}
+      <select id="rc-${it.id}" onchange="reviewComments['${it.id}']={reason:this.value,comment:(reviewComments['${it.id}']||{}).comment||''}">
+        ${["OTHER","TEAM_CALL","MISSING_AUDIO","MISSING_VISUAL_CONTEXT","WRONG_TIMING",
+           "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option ${com.reason===c?"selected":""}>${c}</option>`).join("")}
+      </select>
+      <input id="cm-${it.id}" placeholder="${t("comment")}" value="${esc(com.comment||"")}" oninput="reviewComments['${it.id}']={reason:(reviewComments['${it.id}']||{}).reason||'OTHER',comment:this.value}">
+    </div>`;
+  // Q2/Q3 按类型
+  const intentBtns = isIntent ? `
+    <div class="row" style="margin-top:8px">
+      <span class="muted" style="font-size:12px">${t("intentCloser")}</span>
+      ${["ROTATE","SOFT_ROTATE","REPOSITION","GATHER_INFO","HOLD","OTHER","UNSURE"].map(l=>
+        qBtn("intent",l,l,"ansIntent")).join("")}
+    </div>` : "";
+  const prefBtns = isIntent && it.candidates && it.candidates.length >= 2 ? `
+    <div class="row" style="margin-top:6px">
+      <span class="muted" style="font-size:12px">${t("preferCandidate")}</span>
+      ${it.candidates.slice(0,3).map(c=>qBtn("cand",c,c,"ansCand")).join("")}
+    </div>` : "";
+  const decisionBtns = isDecision ? `
+    <div class="row" style="margin-top:8px">
+      <span class="muted" style="font-size:12px">${t("decisionWas")}</span>
+      ${qBtn("decision","CORRECT",t("correct"),"ansDecision")}
+      ${qBtn("decision","INCORRECT",t("wrong"),"ansDecision")}
+      ${qBtn("decision","UNSURE",t("unsure"),"ansDecision")}
+    </div>
+    <div class="row" style="margin-top:6px">
+      <span class="muted" style="font-size:12px">${t("candidateCompare")}</span>
+      ${(it.candidates||[]).slice(0,3).map(c=>qBtn("cand",c,c,"ansCand")).join("")}
+    </div>` : "";
+  // 必答问题清单 + 确认按钮
+  const required = ["look"].concat(isIntent ? ["intent"] : []).concat(isDecision ? ["decision"] : []);
+  const allAnswered = required.every(q => ans[q]);
+  const answeredCount = required.filter(q => ans[q]).length;
+  const confirmBtn = `
+    <div class="row" style="margin-top:10px">
+      <span class="muted" style="font-size:12px">${answeredCount}/${required.length} ${t("answeredCount")}</span>
+      <button class="btn" ${allAnswered?"":"disabled style='opacity:.5'"} onclick="submitReviewItem('${it.id}','${isIntent}','${isDecision}')">
+        ${t("confirmSubmit")}${allAnswered?"":" ✔"}</button>
+    </div>`;
+  return `<div class="rev" id="rev-${it.id}">
+    <div class="row"><span class="chip">${esc(it.item_type)}</span>
+      <span class="mono muted">${matchTag(it.match_info)}</span>
+      <span class="mono muted">${playerTag(it.player_info)} · ${inRound(it.round, it.in_round_seconds, it.tick)}</span>
+      <span class="muted">priority ${it.priority}</span></div>
+    <div class="why">${t("system")}: <b>${esc(it.model_prediction)}</b> · ${t("confidence")} ${it.model_confidence} ·
+      ${esc(it.rationale)}</div>
+    ${lookBtns}${intentBtns}${prefBtns}${decisionBtns}${confirmBtn}
+  </div>`;
+}
 
 async function renderReview(el){
   const g = beginRender();
   const { review } = await api("/api/review");
   let html = `<h2>${t("reviewQueue")} <span class="muted">(${t("reviewQueueNote")})</span></h2>`;
   if (!review.length) html += `<div class="card"><span class="muted">${t("noReview")}</span></div>`;
-  for (const it of review){
-    const isIntent = it.item_type === "intent";
-    const isDecision = it.item_type === "decision_episode";
-    const ans = reviewAnswers[it.id] || {};
-    const sel = (q, v) => ans[q] === v ? "on" : "";
-    const qBtn = (q, v, label, fn) => `<button class="btn ${sel(q,v)}" onclick="${fn}('${it.id}','${q}','${v}')">${label}</button>`;
-    // Q1 判断对吗
-    const lookBtns = `
-      <div class="row" style="margin-top:8px">
-        <span class="muted" style="font-size:12px">${t("doesThisLookRight")}</span>
-        ${qBtn("look","CORRECT",t("correct"),"ansLook")}
-        ${qBtn("look","PARTIALLY_CORRECT",t("partially"),"ansLook")}
-        ${qBtn("look","INCORRECT",t("wrong"),"ansLook")}
-        ${qBtn("look","UNSURE",t("unsure"),"ansLook")}
-        <select id="rc-${it.id}" style="max-width:180px">
-          ${["OTHER","TEAM_CALL","MISSING_AUDIO","MISSING_VISUAL_CONTEXT","WRONG_TIMING",
-             "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option>${c}</option>`).join("")}
-        </select>
-        <input id="cm-${it.id}" placeholder="${t("comment")}" style="max-width:180px">
-      </div>`;
-    // Q2/Q3 按类型
-    const intentBtns = isIntent ? `
-      <div class="row" style="margin-top:8px">
-        <span class="muted" style="font-size:12px">${t("intentCloser")}</span>
-        ${["ROTATE","SOFT_ROTATE","REPOSITION","GATHER_INFO","HOLD","OTHER","UNSURE"].map(l=>
-          qBtn("intent",l,l,"ansIntent")).join("")}
-      </div>` : "";
-    const prefBtns = isIntent && it.candidates && it.candidates.length >= 2 ? `
-      <div class="row" style="margin-top:6px">
-        <span class="muted" style="font-size:12px">${t("preferCandidate")}</span>
-        ${it.candidates.slice(0,3).map(c=>qBtn("cand",c,c,"ansCand")).join("")}
-      </div>` : "";
-    const decisionBtns = isDecision ? `
-      <div class="row" style="margin-top:8px">
-        <span class="muted" style="font-size:12px">${t("decisionWas")}</span>
-        ${qBtn("decision","CORRECT",t("correct"),"ansDecision")}
-        ${qBtn("decision","INCORRECT",t("wrong"),"ansDecision")}
-        ${qBtn("decision","UNSURE",t("unsure"),"ansDecision")}
-      </div>
-      <div class="row" style="margin-top:6px">
-        <span class="muted" style="font-size:12px">${t("candidateCompare")}</span>
-        ${(it.candidates||[]).slice(0,3).map(c=>qBtn("cand",c,c,"ansCand")).join("")}
-      </div>` : "";
-    // 必答问题清单 + 确认按钮
-    const required = ["look"].concat(isIntent ? ["intent"] : []).concat(isDecision ? ["decision"] : []);
-    const allAnswered = required.every(q => ans[q]);
-    const answeredCount = required.filter(q => ans[q]).length;
-    const confirmBtn = `
-      <div class="row" style="margin-top:10px">
-        <span class="muted" style="font-size:12px">${answeredCount}/${required.length} ${t("answeredCount")}</span>
-        <button class="btn" ${allAnswered?"":"disabled style='opacity:.5'"} onclick="submitReviewItem('${it.id}','${isIntent}','${isDecision}')">
-          ${t("confirmSubmit")}${allAnswered?"":" ✔"}</button>
-      </div>`;
-    html += `<div class="rev" id="rev-${it.id}">
-      <div class="row"><span class="chip">${esc(it.item_type)}</span>
-        <span class="mono muted">${matchTag(it.match_info)}</span>
-        <span class="mono muted">${playerTag(it.player_info)} · ${inRound(it.round, it.in_round_seconds, it.tick)}</span>
-        <span class="muted">priority ${it.priority}</span></div>
-      <div class="why">${t("system")}: <b>${esc(it.model_prediction)}</b> · ${t("confidence")} ${it.model_confidence} ·
-        ${esc(it.rationale)}</div>
-      ${lookBtns}${intentBtns}${prefBtns}${decisionBtns}${confirmBtn}
-    </div>`;
-  }
+  for (const it of review) html += reviewItemHtml(it);
   const stats = await api("/api/annotations/stats").catch(()=>({}));
   if (stats.total) html += `<div class="card"><h3>${t("annStats")}</h3><pre>${esc(JSON.stringify(stats,null,1))}</pre></div>`;
   commitRender(el, g, html);
 }
-function ansLook(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {look: v}); renderReview($("#app")); }
-function ansIntent(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {intent: v}); renderReview($("#app")); }
-function ansDecision(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {decision: v}); renderReview($("#app")); }
-function ansCand(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {cand: v}); renderReview($("#app")); }
+// 只重渲染当前片段（不影响其他片段）
+function rerenderReviewItem(reviewId){
+  const el = document.getElementById("rev-"+reviewId);
+  const it = reviewItemsCache[reviewId];
+  if (!el || !it) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = reviewItemHtml(it);
+  el.replaceWith(tmp.firstElementChild);
+}
+let reviewItemsCache = {};
+async function renderReview(el){
+  const g = beginRender();
+  const { review } = await api("/api/review");
+  reviewItemsCache = {};
+  for (const it of review) reviewItemsCache[it.id] = it;
+  let html = `<h2>${t("reviewQueue")} <span class="muted">(${t("reviewQueueNote")})</span></h2>`;
+  if (!review.length) html += `<div class="card"><span class="muted">${t("noReview")}</span></div>`;
+  for (const it of review) html += reviewItemHtml(it);
+  const stats = await api("/api/annotations/stats").catch(()=>({}));
+  if (stats.total) html += `<div class="card"><h3>${t("annStats")}</h3><pre>${esc(JSON.stringify(stats,null,1))}</pre></div>`;
+  commitRender(el, g, html);
+}
+function ansLook(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {look: v}); rerenderReviewItem(reviewId); }
+function ansIntent(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {intent: v}); rerenderReviewItem(reviewId); }
+function ansDecision(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {decision: v}); rerenderReviewItem(reviewId); }
+function ansCand(reviewId, q, v){ reviewAnswers[reviewId] = Object.assign({}, reviewAnswers[reviewId] || {}, {cand: v}); rerenderReviewItem(reviewId); }
 async function submitReviewItem(reviewId, isIntent, isDecision){
   const ans = reviewAnswers[reviewId] || {};
-  const rc = $("#rc-"+reviewId)?.value || "OTHER";
-  const cm = $("#cm-"+reviewId)?.value || "";
+  const com = reviewComments[reviewId] || {};
+  const rc = com.reason || "OTHER";
+  const cm = com.comment || "";
   try {
     const jobs = [];
     // Q1 判断对吗
@@ -625,6 +654,8 @@ async function submitReviewItem(reviewId, isIntent, isDecision){
     await Promise.all(jobs);
     await api("/api/review/"+reviewId+"/complete", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
     delete reviewAnswers[reviewId];
+    delete reviewComments[reviewId];
+    delete reviewItemsCache[reviewId];
     toast(t("annSaved"));
     goto("review");
   } catch(e){ toast(e.message); }
@@ -669,6 +700,7 @@ async function renderDecisions(el){
         <span class="mono muted">${playerTag(d.player_info)} · ${inRound(d.round, d.in_round_seconds, d.anchor_tick)}</span>
       </div>
       <div class="why"><b>${t("observed")}</b>: ${esc(d.observed_action)} · ${t("commitment")} ${esc(d.commitment_state)} · ${t("intent")} ${esc(d.intent)} · sufficiency ${esc(d.evidence_sufficiency||"—")}</div>
+      ${(d.temporal_context||{}).sighting_note ? `<div class="why"><b>${t("sightingContext")}</b>: ${esc((d.temporal_context||{}).sighting_note)}</div>` : ""}
       <div class="why"><b>${t("whyFight")}</b>: ${why} <span class="muted">(${t("strategic")} ${esc(d.strategic_evaluation||"—")})</span></div>
       ${engLine}${execLine}
       <div class="row" style="margin-top:6px">

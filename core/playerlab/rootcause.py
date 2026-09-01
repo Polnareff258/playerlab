@@ -24,6 +24,9 @@ def build_root_causes(demo: IngestedDemo, cfg: Config, db: DB,
         sid = k.get("user_steamid")
         if sid is None or int(sid) not in players:
             continue
+        # round 0 = warmup/knife — not a real round (cs-demo-manager)
+        if demo.round_of_tick(k["tick"]) < 1:
+            continue
         death_t[int(k["tick"])] = int(sid)
     adv_by_player_tick = {(s["steamid"], s["tick"]): s for s in advantage_samples}
 

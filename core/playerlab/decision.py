@@ -66,6 +66,11 @@ def detect_for_player(demo: IngestedDemo, steamid: int, cfg: Config,
         tc1 = ep[-1]["t"]
         if tc0 not in recs:
             continue
+        # round 0 = warmup/knife (before the first real round); the game has
+        # not started — no decision points there (cs-demo-manager: only count
+        # rounds after match start)
+        if demo.round_of_tick(tc0) < 1:
+            continue
         # opponent = other party with most events
         counts = {}
         for e in ep:

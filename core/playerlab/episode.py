@@ -24,7 +24,7 @@ import uuid
 from .config import Config
 from .db import DB
 from .ingest import IngestedDemo
-from .state import build_tick_index, pos_at, build_ground_truth
+from .state import build_tick_index, pos_at, build_ground_truth, vision_sees
 from .context import build_temporal_context
 from .intent import detect_commitment, detect_role, classify_intent
 from .feasibility import action_feasibility
@@ -33,7 +33,8 @@ from .macro import compute_macro_context
 from .tradeability import compute_tradeability, NULL_GEOMETRY
 from .state import KnownStateBuilder
 
-FAMILIES = ("CONTACT_RESPONSE", "ADVANTAGE_PRESERVATION", "OBJECTIVE_COMMITMENT")
+FAMILIES = ("CONTACT_RESPONSE", "ADVANTAGE_PRESERVATION", "OBJECTIVE_COMMITMENT",
+            "SIGHTING_RESPONSE")
 
 # MVP action taxonomy (spec §9)
 ACTIONS = ("PEEK", "HOLD", "HIDE", "RE_PEEK", "DISENGAGE", "REPOSITION",
@@ -47,6 +48,7 @@ _FAMILY_CANDIDATES = {
     "CONTACT_RESPONSE": ["PEEK", "HOLD", "HIDE", "DISENGAGE", "FLASH", "REPOSITION"],
     "ADVANTAGE_PRESERVATION": ["HOLD", "PEEK", "DISENGAGE", "FLASH", "REPOSITION"],
     "OBJECTIVE_COMMITMENT": ["PLANT", "TRADE", "HOLD", "REPOSITION"],
+    "SIGHTING_RESPONSE": ["HIDE", "REPOSITION", "HOLD", "PEEK", "DISENGAGE"],
 }
 
 
@@ -81,6 +83,9 @@ def detect_opportunities(demo: IngestedDemo, cfg: Config, idx: dict,
             rec = idx.get((sid, t))
             if not rec or not rec.get("is_alive"):
                 continue
+            # round 0 = warmup/knife — not a real round (cs-demo-manager)
+            if demo.round_of_tick(t) < 1:
+                continue
             opps.append({"type": "CONTACT_RESPONSE", "anchor_tick": t, "steamid": sid,
                          "trigger": "first_damage_contact", "confidence": 0.7})
 
@@ -106,6 +111,8 @@ def detect_opportunities(demo: IngestedDemo, cfg: Config, idx: dict,
         # 3) OBJECTIVE_COMMITMENT: plant/defuse started near player
         for ev in demo.events.get("plants_start", []) + demo.events.get("defuses_start", []):
             t = ev["tick"]
+            if demo.round_of_tick(t) < 1:   # warmup/knife — not a real round
+                continue
             actor = ev.get("user_steamid")
             rec = idx.get((sid, t))
             if not rec or not rec.get("is_alive"):
@@ -122,6 +129,44 @@ def detect_opportunities(demo: IngestedDemo, cfg: Config, idx: dict,
                                  "steamid": sid, "trigger": "teammate_plant_start",
                                  "confidence": 0.6})
 
+        # 4) SIGHTING_RESPONSE: the player SEES an enemy without any damage
+        #    exchange — walking / knife out / turned away when an enemy
+        #    appears (spec: moment first, not just duels). Approx FOV with no
+        #    occlusion (honest: "approx_fov_no_occlusion_v1"). No damage near
+        #    the tick means the fight never developed into a duel.
+        damage_ticks = {d["tick"] for d in demo.events["damages"]
+                        if d["user_steamid"] == sid or d["attacker_steamid"] == sid}
+        prev_sight = None
+        for r in demo.rounds:
+            for t in range(r["start_tick"], r["end_tick"], 16):
+                rec = idx.get((sid, t))
+                if not rec or not rec.get("is_alive"):
+                    continue
+                if any(abs(t - dt) <= 32 for dt in damage_ticks):
+                    continue   # this tick is inside a damage exchange
+                # enemy in the player's FOV?
+                seen_enemy = None
+                for s2, tm2 in teams.items():
+                    if tm2 != my_team:
+                        erec = idx.get((s2, t))
+                        if erec and erec.get("is_alive") and vision_sees(rec, erec, cfg, 0):
+                            seen_enemy = s2
+                            break
+                if seen_enemy is None:
+                    prev_sight = None
+                    continue
+                # first sighting in a window (dedupe)
+                if prev_sight is not None and t - prev_sight <= cfg.episode_merge_ticks:
+                    continue
+                prev_sight = t
+                # note the player's state at the moment (walking / knife /
+                # unaware) so the review can judge the response
+                opps.append({"type": "SIGHTING_RESPONSE", "anchor_tick": t,
+                             "steamid": sid,
+                             "trigger": "enemy_sighted_no_damage",
+                             "confidence": 0.6,
+                             "note": _sighting_context(rec)})
+
     # dedupe: same (steamid, type) within merge window -> keep first
     out = []
     for o in sorted(opps, key=lambda x: (x["steamid"], x["anchor_tick"])):
@@ -131,6 +176,23 @@ def detect_opportunities(demo: IngestedDemo, cfg: Config, idx: dict,
             continue
         out.append(o)
     return out
+
+
+def _sighting_context(rec: dict) -> str:
+    """Short human note on the player's state when the enemy appeared
+    (walking / knife out / moving away), so the review can judge the
+    response without watching the whole demo."""
+    speed = rec.get("speed")
+    weapon = rec.get("active_weapon") or rec.get("weapon") or ""
+    moving = speed is not None and speed > 60.0
+    parts = []
+    if moving:
+        parts.append("moving")
+    if "knife" in str(weapon).lower() or "weapon_knife" in str(weapon):
+        parts.append("knife_out")
+    if not parts:
+        parts.append("standing")
+    return ", ".join(parts) or "standing"
 
 
 def _local_context(demo, cfg, idx, known, tc, steamid, tick) -> dict:
@@ -289,6 +351,9 @@ def build_episode(demo, cfg, db, idx, known_builder, opp: dict,
         engagement_ctx = build_engagement_context(
             demo, cfg, tc, known, duel=duel, observed_action=observed)
 
+    tc_summary = tc.summary()
+    if family == "SIGHTING_RESPONSE" and opp.get("note"):
+        tc_summary["sighting_note"] = opp["note"]
     episode_id = f"{demo.demo_id}-{family}-{sid}-{tick}"
     return {
         "id": episode_id,
@@ -297,7 +362,7 @@ def build_episode(demo, cfg, db, idx, known_builder, opp: dict,
         "start_tick": max(0, tick - cfg.context_window_ticks),
         "anchor_tick": tick,
         "end_tick": tick + 256,
-        "temporal_context": tc.summary(),
+        "temporal_context": tc_summary,
         "player_known_state": known,
         "macro_context": macro,
         "local_context": local,
@@ -327,6 +392,7 @@ def build_episode(demo, cfg, db, idx, known_builder, opp: dict,
         "computed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "_known": known, "_tc": tc, "_candidates": candidates,
         "_engagement": engagement_ctx, "_duel": duel,
+        "sighting_note": opp.get("note") if family == "SIGHTING_RESPONSE" else None,
     }
 
 

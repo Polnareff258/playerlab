@@ -86,14 +86,11 @@ def _player_info(db: DB, match_id: str, steam_id: int | None) -> dict | None:
 def _round_start_tick(db: DB, match_id: str, rnum: int | None) -> int | None:
     if not match_id or rnum is None:
         return None
-    # round 0 = first real round (platform warmup is not recorded); it starts
-    # at the first recorded tick, which we approximate with the earliest
-    # decision/anchor. Fall back to the smallest round_start when absent.
+    # Real rounds are numbered 1..N from our own counter (cs-demo-manager);
+    # round 0 no longer exists (warmup/knife is dropped). Defensive: if a
+    # stray round-0 row appears, treat it as starting at tick 0.
     if rnum == 0:
-        for r in db.get_rounds(match_id):
-            if r["round"] == 1:
-                # round 0 runs from the demo start up to round 1's start
-                return 0
+        return 0
     for r in db.get_rounds(match_id):
         if r["round"] == rnum:
             return r["start_tick"]

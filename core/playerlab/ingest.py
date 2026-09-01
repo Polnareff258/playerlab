@@ -33,6 +33,26 @@ EVENT_NAMES = {
 SITE_CODE = {97: "A", 98: "B"}
 
 
+def _is_warmup_pair(p: dict) -> bool:
+    """Warmup end markers have no winner/reason (NaN in the parser).
+
+    Platform-aware: some platforms (e.g. 完美世界) start real rounds at 1
+    with no warmup entry; others record a round_end with NaN winner/reason
+    at the very start (warmup end). Either way a missing winner/reason means
+    the pair is not a real round (cs-demo-manager drops warmup rounds).
+    """
+    w, r_ = p.get("winner"), p.get("reason")
+    for v in (w, r_):
+        try:
+            if v is not None and (isinstance(v, float) and v != v):  # NaN
+                return True
+        except (TypeError, ValueError):
+            pass
+    if w is None or r_ is None:
+        return True
+    return False
+
+
 def demo_id_for(demo_path: str) -> str:
     """Stable demo id derived from the absolute path (batch skip uses it)."""
     return hashlib.sha256(os.path.abspath(demo_path).encode("utf-8")).hexdigest()[:16]
@@ -198,6 +218,10 @@ class IngestedDemo:
         return -1
 
     def round_of_tick(self, tick: int) -> int:
+        """Round number containing tick; 0 = before the first real round
+        (warmup / knife phase, which platforms do or don't record). Real
+        rounds are numbered 1..N from our own counter (cs-demo-manager
+        approach — platform round numbers are unreliable)."""
         for r in self.rounds:
             if r["start_tick"] <= tick <= r["end_tick"]:
                 return r["round"]
@@ -309,18 +333,46 @@ def parse_demo(demo_path: str, cfg: Config | None = None) -> IngestedDemo:
     players = [{"steamid": int(r["steamid"]), "name": str(r["name"]),
                 "team_number": int(r["team_number"])} for r in pif.to_dict("records")]
 
-    # rounds
+    # rounds — platform-aware (cs-demo-manager approach)
+    #
+    # Different platforms record rounds differently:
+    #   - 完美世界 (server_name contains 完美世界): round_start/round_end
+    #     both start at 1, no warmup entry -> all rounds are real, count 1..N
+    #   - other CS2 demos: round_end row 0 has reason/winner NaN at the very
+    #     start (warmup end marker), round_start row 0 is the matching warmup
+    #     start -> the warmup pair must be dropped and real rounds counted
+    #     from 1 with our own counter (never trust platform round numbers).
     rs = parser.parse_event("round_start")
     re_ = parser.parse_event("round_end")
-    rounds = []
+    raw_pairs = []
     for i in range(min(len(rs), len(re_))):
-        rounds.append({"round": int(rs["round"].iloc[i]),
-                       "start_tick": int(rs["tick"].iloc[i]),
-                       "end_tick": int(re_["tick"].iloc[i]),
-                       "winner": str(re_["winner"].iloc[i]),
-                       "reason": str(re_["reason"].iloc[i])})
-    rounds.sort(key=lambda r: r["round"])
+        raw_pairs.append({
+            "start_tick": int(rs["tick"].iloc[i]),
+            "end_tick": int(re_["tick"].iloc[i]),
+            "winner": re_["winner"].iloc[i],
+            "reason": re_["reason"].iloc[i],
+            "platform_round": int(rs["round"].iloc[i]),
+        })
+    raw_pairs.sort(key=lambda r: (r["start_tick"], r["end_tick"]))
 
+    rounds = []
+    real_idx = 0
+    for p in raw_pairs:
+        if _is_warmup_pair(p):
+            continue
+        real_idx += 1
+        rounds.append({"round": real_idx,  # own counter, always 1-based
+                       "start_tick": p["start_tick"],
+                       "end_tick": p["end_tick"],
+                       "winner": str(p["winner"]),
+                       "reason": str(p["reason"]),
+                       "platform_round": p["platform_round"]})
+    if not rounds:  # degenerate: no real rounds found — keep everything
+        rounds = [{"round": i + 1, "start_tick": p["start_tick"],
+                   "end_tick": p["end_tick"], "winner": str(p["winner"]),
+                   "reason": str(p["reason"]),
+                   "platform_round": p["platform_round"]}
+                  for i, p in enumerate(raw_pairs)]
     # sides via bomb plants (planter team = T)
     plants = parser.parse_event("bomb_planted")
     planter_team_by_round = {}
