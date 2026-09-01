@@ -39,6 +39,9 @@ def compute_shot_metrics(demo: IngestedDemo, cfg: Config, idx: dict) -> list[dic
         rec = idx.get((steamid, tick))
         if not rec or rec.get("vx") is None:
             continue
+        # warmup (round 0 — platform 练枪/热身) is not a real match round
+        if demo.round_of_tick(tick) < 1:
+            continue
         vel_at_shot = math.hypot(rec["vx"], rec["vy"])
         move_shoot = vel_at_shot > cfg.move_shoot_velocity
 

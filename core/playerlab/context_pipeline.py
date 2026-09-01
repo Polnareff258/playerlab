@@ -25,14 +25,17 @@ from .tradeability import compute_tradeability, NULL_GEOMETRY
 
 
 def _anchor_events(demo: IngestedDemo, db: DB) -> list[tuple]:
-    """Anchor ticks worth context analysis: deaths + DP decision ticks."""
+    """Anchor ticks worth context analysis: deaths + DP decision ticks.
+    Warmup (round 0 — platform 练枪/热身) is excluded: it is not a real
+    match round and must not feed decision analysis."""
     anchors = []
     players = {p["steamid"] for p in demo.players}
     for k in demo.events["kills"]:
-        if k["user_steamid"] in players:
+        if k["user_steamid"] in players and demo.round_of_tick(k["tick"]) >= 1:
             anchors.append((k["tick"], k["user_steamid"], "death", f"death-{k['tick']}"))
     for dp in db.get_dps(demo.demo_id):
-        anchors.append((dp["decision_tick"], dp["steamid"], "dp", dp["dp_id"]))
+        if demo.round_of_tick(dp["decision_tick"]) >= 1:
+            anchors.append((dp["decision_tick"], dp["steamid"], "dp", dp["dp_id"]))
     return anchors
 
 

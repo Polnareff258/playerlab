@@ -616,12 +616,14 @@ class DB:
 
     def get_execution_metrics(self, match_id=None):
         q = "SELECT * FROM execution_metrics"
-        args = ()
+        conds, args = [], []
+        # warmup (round 0) is not a real match round — never surface it
+        conds.append("round >= 1")
         if match_id:
-            q += " WHERE match_id=?"
-            args = (match_id,)
+            conds.append("match_id=?"); args.append(match_id)
         rows = []
-        for r in self.conn.execute(q + " ORDER BY tick", args):
+        for r in self.conn.execute(q + " WHERE " + " AND ".join(conds) +
+                                   " ORDER BY tick", args):
             d = dict(r)
             d["evidence"] = json.loads(d["evidence"])
             d["meta"] = json.loads(d["meta"])
@@ -696,11 +698,13 @@ class DB:
 
     def get_root_causes(self, match_id=None):
         q = "SELECT * FROM root_causes"
-        args = ()
+        conds, args = [], []
+        # warmup (round 0) is not a real match round — never surface it
+        conds.append("round >= 1")
         if match_id:
-            q += " WHERE match_id=?"
-            args = (match_id,)
-        return [dict(r) for r in self.conn.execute(q + " ORDER BY tick", args)]
+            conds.append("match_id=?"); args.append(match_id)
+        return [dict(r) for r in self.conn.execute(
+            q + " WHERE " + " AND ".join(conds) + " ORDER BY tick", args)]
 
     def upsert_target(self, t: dict):
         self.conn.execute(
@@ -827,7 +831,8 @@ class DB:
     def get_review_queue(self, status="pending", limit=20):
         rows = []
         for r in self.conn.execute(
-                "SELECT * FROM review_queue WHERE status=? ORDER BY priority DESC, tick LIMIT ?",
+                "SELECT * FROM review_queue WHERE status=? AND round >= 1 "
+                "ORDER BY priority DESC, tick LIMIT ?",
                 (status, limit)):
             d = dict(r)
             d["candidates"] = json.loads(d["candidates"]) if d.get("candidates") else []
@@ -856,12 +861,14 @@ class DB:
 
     def get_context_events(self, match_id=None, limit=200):
         q = "SELECT * FROM context_events"
-        args = ()
+        conds, args = [], []
+        # warmup (round 0) is not a real match round — never surface it
+        conds.append("round >= 1")
         if match_id:
-            q += " WHERE match_id=?"
-            args = (match_id,)
+            conds.append("match_id=?"); args.append(match_id)
         rows = []
-        for r in self.conn.execute(q + f" ORDER BY tick LIMIT {limit}", args):
+        for r in self.conn.execute(q + " WHERE " + " AND ".join(conds) +
+                                   f" ORDER BY tick LIMIT {limit}", args):
             d = dict(r)
             for k in ("role_dist", "intent_dist", "feasibility", "temporal_summary"):
                 d[k] = json.loads(d[k])
@@ -968,6 +975,8 @@ class DB:
                               limit=500):
         q = "SELECT * FROM decision_episodes"
         conds, args = [], []
+        # warmup (round 0) is not a real match round — never surface it
+        conds.append("round >= 1")
         if match_id:
             conds.append("match_id=?"); args.append(match_id)
         if player_id:
@@ -1171,6 +1180,8 @@ class DB:
                                 label_source=None, negative_control=None):
         q = "SELECT * FROM calibration_samples"
         conds, args = [], []
+        # warmup (round 0) is not a real match round — never surface it
+        conds.append("round >= 1")
         if detector_type:
             conds.append("detector_type=?"); args.append(detector_type)
         if review_status:
@@ -1275,13 +1286,16 @@ class DB:
         self.conn.commit()
 
     def get_review_moments(self, match_id=None, player_id=None, limit=50):
-        q = "SELECT * FROM review_moments"
+        # warmup moments (their round-0 episodes) were removed; only episodes
+        # that still exist are surfaced
+        q = ("SELECT m.* FROM review_moments m "
+             "JOIN decision_episodes e ON e.id = m.episode_id")
         conds, args = [], []
         if match_id:
-            conds.append("match_id=?"); args.append(match_id)
+            conds.append("m.match_id=?"); args.append(match_id)
         if player_id:
-            conds.append("player_id=?"); args.append(player_id)
+            conds.append("m.player_id=?"); args.append(player_id)
         if conds:
             q += " WHERE " + " AND ".join(conds)
         return [dict(r) for r in self.conn.execute(
-            q + " ORDER BY review_score DESC LIMIT ?", args + [limit])]
+            q + " ORDER BY m.review_score DESC LIMIT ?", args + [limit])]

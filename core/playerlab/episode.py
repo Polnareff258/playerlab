@@ -81,6 +81,9 @@ def detect_opportunities(demo: IngestedDemo, cfg: Config, idx: dict,
             rec = idx.get((sid, t))
             if not rec or not rec.get("is_alive"):
                 continue
+            # warmup (round 0 — platform 练枪/热身) is not a real match round
+            if demo.round_of_tick(t) < 1:
+                continue
             opps.append({"type": "CONTACT_RESPONSE", "anchor_tick": t, "steamid": sid,
                          "trigger": "first_damage_contact", "confidence": 0.7})
 
@@ -106,6 +109,8 @@ def detect_opportunities(demo: IngestedDemo, cfg: Config, idx: dict,
         # 3) OBJECTIVE_COMMITMENT: plant/defuse started near player
         for ev in demo.events.get("plants_start", []) + demo.events.get("defuses_start", []):
             t = ev["tick"]
+            if demo.round_of_tick(t) < 1:   # skip warmup
+                continue
             actor = ev.get("user_steamid")
             rec = idx.get((sid, t))
             if not rec or not rec.get("is_alive"):
