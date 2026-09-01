@@ -71,7 +71,7 @@
     <button id="tab-decisions" onclick="goto('decisions')">Decisions</button>
     <button id="tab-matches" onclick="goto('matches')">Matches</button>
     <button id="tab-review" onclick="goto('review')">Review</button>
-    <button id="tab-calibration" onclick="location.hash='#/calibration'">Calibration</button>
+    <button id="tab-calibration" onclick="goCal()">Calibration</button>
   </nav>
   <button id="lang-btn" onclick="toggleLang()">中 / EN</button>
 </header>
@@ -287,6 +287,10 @@ function applyLang(){
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const pct = x => x==null ? "—" : (x*100).toFixed(0)+"%";
+let RENDER_GEN = 0;                       // 只允许最新一次渲染落盘，防旧渲染覆盖新标签页
+function beginRender(){ return ++RENDER_GEN; }
+function commitRender(el, g, html){ if (g === RENDER_GEN) el.innerHTML = html; }
+function guardActive(g){ return g === RENDER_GEN; }
 async function api(path, opts) {
   const r = await fetch(path, opts);
   const j = await r.json().catch(()=>({}));
@@ -294,21 +298,27 @@ async function api(path, opts) {
   return j;
 }
 function toast(m){ const t2=$("#toast"); t2.textContent=m; t2.style.display="block"; setTimeout(()=>t2.style.display="none",2600); }
-function setTab(t){ ["focus","decisions","matches","review"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
+function setTab(t){ ["focus","decisions","matches","review","calibration"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
+function goCal(){
+  setTab("calibration");
+  if (location.hash === "#/calibration"){ renderCalibration($("#app")); }
+  else location.hash = "#/calibration";
+}
 
-async function goto(t){
-  setTab(t);
+async function goto(page){
+  setTab(page);
   const el=$("#app"); el.innerHTML=`<span class="muted">${t("loading")}</span>`;
   try {
-    if (t==="focus") return renderFocus(el);
-    if (t==="decisions") return renderDecisions(el);
-    if (t==="matches") return renderMatches(el);
+    if (page==="focus") return renderFocus(el);
+    if (page==="decisions") return renderDecisions(el);
+    if (page==="matches") return renderMatches(el);
     return renderReview(el);
   } catch(e){ el.innerHTML=`<span style="color:var(--bad)">${esc(e.message)}</span>`; }
 }
 
 /* ---------------- Focus（当前训练焦点） ---------------- */
 async function renderFocus(el){
+  const g = beginRender();
   const { focus } = await api("/api/focus");
   const { bottlenecks } = await api("/api/bottlenecks");
   const { patterns } = await api("/api/patterns");
@@ -363,7 +373,7 @@ async function renderFocus(el){
   const other = bottlenecks.filter(b=>!b.eligible);
   if (other.length) html += `<div class="card"><h3>${t("belowThreshold")}</h3>` +
     other.map(b=>`<div class="muted mono">${esc(b.pattern_type)}: ${t("belowThresholdReason")}</div>`).join("") + `</div>`;
-  el.innerHTML = html;
+  commitRender(el, g, html);
 }
 async function feedback(targetId, label){
   try {
@@ -376,6 +386,7 @@ async function feedback(targetId, label){
 
 /* ---------------- Matches（比赛库） ---------------- */
 async function renderMatches(el){
+  const g = beginRender();
   const { matches } = await api("/api/matches");
   let html = `<h2>${t("demoLib")}</h2><div class="card">` +
     (matches.length ? `<table><tr><th>${t("match")}</th><th>${t("map")}</th><th>${t("rounds")}</th><th>${t("parsedAt")}</th></tr>` +
@@ -383,11 +394,12 @@ async function renderMatches(el){
         <td class="mono">${esc(m.demo_id.slice(0,12))}…</td><td>${esc(m.map_name)}</td>
         <td>${m.rounds_total}</td><td class="muted">${esc(m.parsed_at)}</td></tr>`).join("") + `</table>`
       : `<span class="muted">${t("noDemos")}</span>`) + `</div>`;
-  el.innerHTML = html;
+  commitRender(el, g, html);
 }
 
 /* ---------------- 比赛入口：选择 Focus Player ---------------- */
 async function renderMatch(el, matchId){
+  const g = beginRender();
   const m = await api("/api/matches/"+matchId);
   const match = m.match;
   let html = `<h2>${esc(match.map_name)} <span class="muted">${match.rounds_total} ${t("rounds")}</span></h2>`;
@@ -405,11 +417,10 @@ async function renderMatch(el, matchId){
     <div class="muted mono" style="font-size:11px;margin-top:4px">${t("rememberedNote")}</div>
   </div>`;
   if (currentFocus){
-    html += `<div id="player-view"></div>`;
-    el.innerHTML = html;
+    commitRender(el, g, html + `<div id="player-view"></div>`);
     return renderPlayerView(el, matchId, currentFocus);
   }
-  el.innerHTML = html;
+  commitRender(el, g, html);
 }
 async function selectFocus(matchId){
   const sid = $("#focus-sel").value;
@@ -429,6 +440,7 @@ async function rememberFocus(matchId){
 
 /* ---------------- Player Overview + Top Review Moments ---------------- */
 async function renderPlayerView(el, matchId, steamId){
+  const g = beginRender();
   const [ov, mom] = await Promise.all([
     api("/api/matches/"+matchId+"/players/"+steamId+"/overview").catch(()=>({overview:null})),
     api("/api/matches/"+matchId+"/players/"+steamId+"/review-moments").catch(()=>({moments:[]}))
@@ -466,7 +478,7 @@ async function renderPlayerView(el, matchId, steamId){
       </div>
     </div>`;
   }
-  el.innerHTML = html;
+  commitRender(el, g, html);
 }
 async function reviewCal(matchId, steamId){
   const { samples } = await api("/api/matches/"+matchId+"/players/"+steamId+"/calibration").catch(()=>({samples:[]}));
@@ -476,6 +488,7 @@ async function reviewCal(matchId, steamId){
 
 /* ---------------- Review（人工标注） ---------------- */
 async function renderReview(el){
+  const g = beginRender();
   const { review } = await api("/api/review");
   let html = `<h2>${t("reviewQueue")} <span class="muted">(${t("reviewQueueNote")})</span></h2>`;
   if (!review.length) html += `<div class="card"><span class="muted">${t("noReview")}</span></div>`;
@@ -529,7 +542,7 @@ async function renderReview(el){
   }
   const stats = await api("/api/annotations/stats").catch(()=>({}));
   if (stats.total) html += `<div class="card"><h3>${t("annStats")}</h3><pre>${esc(JSON.stringify(stats,null,1))}</pre></div>`;
-  el.innerHTML = html;
+  commitRender(el, g, html);
 }
 async function annotate(reviewId, label){
   try {
@@ -571,6 +584,7 @@ async function decisionPref(episodeId, action){
 
 /* ---------------- Decisions（DecisionEpisode 决策片段） ---------------- */
 async function renderDecisions(el){
+  const g = beginRender();
   const { decisions } = await api("/api/decisions");
   const { stats } = await api("/api/decision-stats").catch(()=>({stats:{}}));
   let html = `<h2>${t("decisions")} <span class="muted">(DecisionEpisode)</span></h2>`;
@@ -614,7 +628,7 @@ async function renderDecisions(el){
       </div>
     </div>`;
   }
-  el.innerHTML = html;
+  commitRender(el, g, html);
 }
 
 window.addEventListener("hashchange", () => {
@@ -624,7 +638,7 @@ window.addEventListener("hashchange", () => {
     const el = $("#app"); el.innerHTML = `<span class="muted">${t("loading")}</span>`;
     return renderMatch(el, matchId).catch(e => el.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`);
   }
-  if (h.startsWith("#/calibration")) return renderCalibration($("#app"));
+  if (h.startsWith("#/calibration")){ setTab("calibration"); return renderCalibration($("#app")); }
   goto(h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
 });
 
@@ -632,6 +646,7 @@ window.addEventListener("hashchange", () => {
 let calSession = [];
 let calIdx = 0;
 async function renderCalibration(el){
+  const g = beginRender();
   const data = await api("/api/calibration-session").catch(()=>({session:[], ground_truth:{detectors:{}}}));
   calSession = data.session || [];
   calIdx = 0;
@@ -658,8 +673,8 @@ async function renderCalibration(el){
     <button class="btn" onclick="calNav(1)">${t("next")}</button>
     <button class="btn" onclick="calSkip()">${t("skip")}</button>
   </div>`;
-  el.innerHTML = html;
-  if (calSession.length) renderCalCard();
+  commitRender(el, g, html);
+  if (guardActive(g) && calSession.length) renderCalCard();
 }
 async function renderCalCard(){
   const s = calSession[calIdx];
@@ -668,7 +683,9 @@ async function renderCalCard(){
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({detector: s.detector_type})}
   ).catch(()=>({reasons:["OTHER","INSUFFICIENT_CONTEXT"]}));
   const neg = s.is_negative_control ? `<span class="chip">${t("negativeControl")}</span>` : "";
-  document.getElementById("cal-card").innerHTML = `<div class="card">
+  const card = document.getElementById("cal-card");
+  if (!card) return;
+  card.innerHTML = `<div class="card">
     <div class="row"><span class="chip">${esc(s.detector_type)}</span>${neg}
       <span class="mono muted">r${s.round} t${s.tick}</span>
       <span class="muted">conf ${s.predicted_confidence ?? "—"} · evidence ${esc(s.evidence_sufficiency||"—")}</span>
