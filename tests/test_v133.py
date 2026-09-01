@@ -400,6 +400,56 @@ def test_calibration_confirmed_moving_shot_reasonable():
     assert _confirmed("ACTUAL_INACCURATE_MOVING_SHOT") is True
 
 
+def test_detect_match_time_filename():
+    """Real match time comes from the platform filename timestamp, not the
+    file mtime or analysis time (cs-demo-manager style)."""
+    from playerlab.ingest import detect_match_time, _filename_matchtime
+    assert _filename_matchtime(
+        r"D:\d\SampleDemo\g161-20260715213814336074130_de_mirage.dem"
+    ) == "2026-07-15T21:38:14"
+    assert _filename_matchtime(
+        r"D:\d\SampleDemo\g161-20260828215920054739362_de_dust2.dem"
+    ) == "2026-08-28T21:59:20"
+    # no timestamp -> None (falls through to mtime fallback)
+    assert _filename_matchtime(r"D:\d\SampleDemo\9211728790507910668_0.dem") is None
+    t, src = detect_match_time(
+        r"D:\d\SampleDemo\g161-20260715213814336074130_de_mirage.dem")
+    assert t == "2026-07-15T21:38:14"
+    assert src == "filename"
+
+
+def test_match_time_roundtrip_and_in_round_seconds():
+    """match_time persists via upsert_match; API attach computes the in-round
+    clock from (tick - round_start) / tickrate with the cs-demo-manager
+    convention of 64 ticks/s for CS2."""
+    db = DB(":memory:")
+    db.upsert_match({"demo_id": "m1", "demo_path": "", "map_name": "de_dust2",
+                     "tickrate": 64, "player_count": 10, "rounds_total": 3,
+                     "side_swap_round": None, "parsed_at": "2026-01-01T00:00:00",
+                     "parser_version": "test",
+                     "match_time": "2026-08-28T21:59:20",
+                     "match_time_source": "filename"})
+    m = db.get_match("m1")
+    assert m["match_time"] == "2026-08-28T21:59:20"
+    assert m["match_time_source"] == "filename"
+    # legacy upserts (no match_time keys) still work
+    db.upsert_match({"demo_id": "m2", "demo_path": "", "map_name": "de_mirage",
+                     "tickrate": 64, "player_count": 10, "rounds_total": 2,
+                     "side_swap_round": None, "parsed_at": "2026-01-02T00:00:00",
+                     "parser_version": "test"})
+    assert db.get_match("m2")["match_time"] in (None, "")
+    # in-round clock: round 3 starts at tick 12800; item at tick 13216 ->
+    # (13216-12800)/64 = 6.5 s
+    db.replace_rounds("m1", [{"round": 3, "start_tick": 12800, "end_tick": 20000,
+                              "winner": "CT", "reason": "ct_killed"}])
+    from playerlab.api import _attach_match_info
+    items = [{"match_id": "m1", "round": 3, "tick": 13216}]
+    _attach_match_info(db, items)
+    assert items[0]["in_round_seconds"] == 6.5
+    assert items[0]["match_info"]["match_time"] == "2026-08-28T21:59:20"
+    assert items[0]["match_info"]["tickrate"] == 64
+
+
 if __name__ == "__main__":
     import traceback
     failed = 0

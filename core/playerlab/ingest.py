@@ -38,6 +38,107 @@ def demo_id_for(demo_path: str) -> str:
     return hashlib.sha256(os.path.abspath(demo_path).encode("utf-8")).hexdigest()[:16]
 
 
+# ---- real match time (cs-demo-manager approach) ----
+# CS2 demo files carry no wall-clock time in the header. The reference
+# implementation (akiver/cs-demo-manager) reads CDataGCCStrike15V2_MatchInfo
+# from the sibling ".info" file (matchtime = unix seconds); when absent it
+# falls back to the demo file's modification time. We add a middle layer:
+# platform demo filenames embed the match start (e.g. perfectworld
+# "g161-20260715213814336074130_de_mirage.dem" -> 2026-07-15 21:38:14).
+
+_MATCH_INFO_MAGIC = b"\x0a\x5e\x10\x59\xa0\x84\xcd\x0d"  # CDataGCCStrike15V2_MatchInfo tag
+_INFO_FIELD_MATCHTIME = 3  # field number of matchtime in CDataGCCStrike15V2_MatchInfo
+
+
+def _info_matchtime(demo_path: str) -> int | None:
+    """Read matchtime (unix seconds) from the sibling .info protobuf file."""
+    info_path = demo_path + ".info"
+    if not os.path.isfile(info_path):
+        return None
+    try:
+        raw = open(info_path, "rb").read()
+    except OSError:
+        return None
+    if _MATCH_INFO_MAGIC not in raw:
+        return None
+    # walk the top-level CDataGCCStrike15V2_MatchInfo fields; matchtime is
+    # field 3, a varint
+    idx = raw.find(_MATCH_INFO_MAGIC)
+    idx += len(_MATCH_INFO_MAGIC)
+    while idx < len(raw):
+        b = raw[idx]
+        idx += 1
+        field, wire = (b >> 3), (b & 7)
+        if field == _INFO_FIELD_MATCHTIME and wire == 0:
+            value = 0
+            shift = 0
+            while idx < len(raw):
+                vb = raw[idx]
+                idx += 1
+                value |= (vb & 0x7F) << shift
+                if not (vb & 0x80):
+                    break
+                shift += 7
+            return value
+        # skip other fields by wire type
+        if wire == 0:  # varint
+            while idx < len(raw) and raw[idx] & 0x80:
+                idx += 1
+            idx += 1
+        elif wire == 2:  # length-delimited
+            if idx >= len(raw):
+                return None
+            ln = raw[idx]
+            idx += 1
+            if ln & 0x80:  # multi-byte length — bail out, not our field
+                return None
+            idx += ln
+        elif wire == 5:  # fixed32
+            idx += 4
+        elif wire == 1:  # fixed64
+            idx += 8
+        else:  # groups — not expected in this message
+            return None
+    return None
+
+
+def _filename_matchtime(demo_path: str) -> str | None:
+    """Platform filenames embed the match start; return ISO or None.
+
+    perfectworld:  g161-20260715213814336074130_de_mirage.dem
+    (also matches the generic YYYYMMDDHHMMSS embedded in many platform names)
+    """
+    import re
+    base = os.path.basename(demo_path)
+    m = re.search(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", base)
+    if not m:
+        return None
+    y, mo, d, h, mi, s = (int(g) for g in m.groups())
+    if not (2000 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31
+            and 0 <= h <= 23 and 0 <= mi <= 59 and 0 <= s <= 59):
+        return None
+    return f"{y:04d}-{mo:02d}-{d:02d}T{h:02d}:{mi:02d}:{s:02d}"
+
+
+def detect_match_time(demo_path: str) -> tuple[str, str]:
+    """Best-effort real match start time + its provenance.
+
+    Priority: .info matchtime (unix) > filename timestamp > file mtime.
+    Returns (iso_utc_like, source) — both may be empty when nothing is usable.
+    """
+    mt = _info_matchtime(demo_path)
+    if mt is not None:
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(mt)), ".info-matchtime"
+    fname = _filename_matchtime(demo_path)
+    if fname:
+        return fname, "filename"
+    try:
+        mtime = os.path.getmtime(demo_path)
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(mtime)), "mtime"
+    except OSError:
+        return "", ""
+
+
 def clean(v):
     """Convert pandas/NaN values to JSON-safe primitives."""
     if v is None:
@@ -84,6 +185,8 @@ class IngestedDemo:
     tick_range: tuple
     parsed_at: str = ""
     parser_version: str = "demoparser2 0.42.0"
+    match_time: str = ""            # real match start (not analysis time)
+    match_time_source: str = ""     # .info-matchtime | filename | mtime
 
     def player_steamids(self) -> set[int]:
         return {p["steamid"] for p in self.players}
@@ -321,6 +424,8 @@ def parse_demo(demo_path: str, cfg: Config | None = None) -> IngestedDemo:
         rounds=rounds, sides=sides, player_sides=player_sides, events=events,
         ticks=ticks_df, tick_range=(start, end),
         parsed_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        match_time=detect_match_time(demo_path)[0],
+        match_time_source=detect_match_time(demo_path)[1],
     )
 
 
@@ -332,6 +437,7 @@ def canonical_json(demo: IngestedDemo) -> dict:
             "map": demo.header.get("map_name"), "tickrate": demo.header.get("tickrate"),
             "players": len(demo.players), "rounds": len(demo.rounds),
             "parsed_at": demo.parsed_at, "parser": demo.parser_version,
+            "match_time": demo.match_time, "match_time_source": demo.match_time_source,
             "tool": f"playerlab-core {__version__}",
         },
         "players": demo.players,
@@ -357,6 +463,7 @@ def persist(demo: IngestedDemo, cfg: Config, db: DB, analyses_dir: str | None = 
         "player_count": len(demo.players), "rounds_total": len(demo.rounds),
         "side_swap_round": None, "parsed_at": demo.parsed_at,
         "parser_version": demo.parser_version,
+        "match_time": demo.match_time, "match_time_source": demo.match_time_source,
     }
     db.upsert_match(match)
     db.replace_rounds(demo.demo_id, demo.rounds)

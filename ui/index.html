@@ -295,7 +295,19 @@ const fmtTime = s => s ? String(s).replace("T"," ").slice(0,16) : "—";
 const demoFile = m => (m && m.demo_path ? String(m.demo_path).split(/[\\/]/).pop() : (m && m.demo_file) || (m && m.demo_id ? m.demo_id.slice(0,12) : "—"));
 function matchTag(mi){
   if (!mi) return "";
-  return `${esc(mi.map_name||"—")} · ${esc(fmtTime(mi.parsed_at))} · ${esc(mi.demo_file||"")}`;
+  // match_time = real match start (from .info/filename); fall back to parsed_at
+  return `${esc(mi.map_name||"—")} · ${esc(fmtTime(mi.match_time || mi.parsed_at))} · ${esc(mi.demo_file||"")}`;
+}
+function inRound(round, inSeconds, tick){
+  // 局内时间：第几回合 MM:SS（也保留 tick）
+  if (round === undefined || round === null) return "";
+  let t = "";
+  if (inSeconds !== undefined && inSeconds !== null && !isNaN(inSeconds)) {
+    const s = Math.max(0, Math.round(inSeconds));
+    t = `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+  }
+  const tickPart = (tick !== undefined && tick !== null) ? ` (tick ${tick})` : "";
+  return `r${round} ${t}${tickPart}`;
 }
 function playerTag(pi){
   if (!pi) return "";
@@ -403,7 +415,7 @@ async function renderMatches(el){
     (matches.length ? `<table><tr><th>${t("match")}</th><th>${t("map")}</th><th>${t("rounds")}</th><th>${t("parsedAt")}</th></tr>` +
       matches.map(m=>`<tr class="click" onclick="location.hash='#/match/${m.demo_id}'">
         <td class="mono">${esc(demoFile(m))}</td><td>${esc(m.map_name)}</td>
-        <td>${m.rounds_total}</td><td class="muted">${esc(fmtTime(m.parsed_at))}</td></tr>`).join("") + `</table>`
+        <td>${m.rounds_total}</td><td class="muted">${esc(fmtTime(m.match_time || m.parsed_at))}</td></tr>`).join("") + `</table>`
       : `<span class="muted">${t("noDemos")}</span>`) + `</div>`;
   commitRender(el, g, html);
 }
@@ -413,7 +425,7 @@ async function renderMatch(el, matchId){
   const g = beginRender();
   const m = await api("/api/matches/"+matchId);
   const match = m.match;
-  let html = `<h2>${esc(match.map_name)} <span class="muted">${match.rounds_total} ${t("rounds")} · ${esc(demoFile(match))} · ${esc(fmtTime(match.parsed_at))}</span></h2>`;
+  let html = `<h2>${esc(match.map_name)} <span class="muted">${match.rounds_total} ${t("rounds")} · ${esc(demoFile(match))} · ${esc(fmtTime(match.match_time || match.parsed_at))}</span></h2>`;
   const f = await api("/api/focus-player?match="+matchId).catch(()=>({focus:null}));
   const currentFocus = f.focus && f.focus.steam_id ? f.focus.steam_id : null;
   html += `<div class="card">
@@ -477,7 +489,7 @@ async function renderPlayerView(el, matchId, steamId){
       <div class="row">
         <span class="chip ${mm.is_positive?"ok":mm.review_score>=0.6?"MEDIUM":""}">${mm.is_positive?t("goodExample"):esc(mm.primary_reason||"")}</span>
         <span class="mono muted">${matchTag(d.match_info)}</span>
-        <span class="mono muted">${playerTag(d.player_info)} · r${mm.round||ep.round} t${mm.tick||ep.anchor_tick}</span>
+        <span class="mono muted">${playerTag(d.player_info)} · ${inRound(mm.round||ep.round, d.in_round_seconds, mm.tick||ep.anchor_tick)}</span>
         <span class="muted">score ${mm.review_score}</span>
       </div>
       <div class="why"><b>${t("whyYouFought")}</b>: ${esc(ep.strategic_evaluation||"—")}</div>
@@ -535,7 +547,7 @@ async function renderReview(el){
     html += `<div class="rev">
       <div class="row"><span class="chip">${esc(it.item_type)}</span>
         <span class="mono muted">${matchTag(it.match_info)}</span>
-        <span class="mono muted">${playerTag(it.player_info)} · r${it.round} t${it.tick}</span>
+        <span class="mono muted">${playerTag(it.player_info)} · ${inRound(it.round, it.in_round_seconds, it.tick)}</span>
         <span class="muted">priority ${it.priority}</span></div>
       <div class="why">${t("system")}: <b>${esc(it.model_prediction)}</b> · ${t("confidence")} ${it.model_confidence} ·
         ${esc(it.rationale)}</div>
@@ -631,7 +643,7 @@ async function renderDecisions(el){
         <span class="chip">${esc(d.decision_domain||"")}</span>
         <b>${esc((d.family||"").replace("_"," "))}</b>
         <span class="mono muted">${matchTag(d.match_info)}</span>
-        <span class="mono muted">${playerTag(d.player_info)} · r${d.round} t${d.anchor_tick}</span>
+        <span class="mono muted">${playerTag(d.player_info)} · ${inRound(d.round, d.in_round_seconds, d.anchor_tick)}</span>
       </div>
       <div class="why"><b>${t("observed")}</b>: ${esc(d.observed_action)} · ${t("commitment")} ${esc(d.commitment_state)} · ${t("intent")} ${esc(d.intent)} · sufficiency ${esc(d.evidence_sufficiency||"—")}</div>
       <div class="why"><b>${t("whyFight")}</b>: ${why} <span class="muted">(${t("strategic")} ${esc(d.strategic_evaluation||"—")})</span></div>
@@ -702,7 +714,7 @@ async function renderCalCard(){
   card.innerHTML = `<div class="card">
     <div class="row"><span class="chip">${esc(s.detector_type)}</span>${neg}
       <span class="mono muted">${matchTag(s.match_info)}</span>
-      <span class="mono muted">${playerTag(s.player_info)} · r${s.round} t${s.tick}</span>
+      <span class="mono muted">${playerTag(s.player_info)} · ${inRound(s.round, s.in_round_seconds, s.tick)}</span>
       <span class="muted">conf ${s.predicted_confidence ?? "—"} · evidence ${esc(s.evidence_sufficiency||"—")}</span>
       <span class="muted">${calIdx+1}/${calSession.length}</span></div>
     <div class="why">${t("systemSays")}: <b>${esc(s.predicted_label)}</b> (${esc(s.sample_stratum||"general")})</div>

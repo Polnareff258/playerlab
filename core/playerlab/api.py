@@ -60,8 +60,11 @@ def _match_info(db: DB, match_id: str) -> dict | None:
         "demo_id": m["demo_id"],
         "demo_file": os.path.basename(demo_path) or m["demo_id"],
         "map_name": m.get("map_name"),
+        "match_time": m.get("match_time") or m.get("parsed_at"),
+        "match_time_source": m.get("match_time_source") or "parsed_at",
         "parsed_at": m.get("parsed_at"),
         "rounds_total": m.get("rounds_total"),
+        "tickrate": m.get("tickrate") or 64,
     }
 
 
@@ -80,10 +83,20 @@ def _player_info(db: DB, match_id: str, steam_id: int | None) -> dict | None:
             "is_user": bool(p.get("is_user"))}
 
 
+def _round_start_tick(db: DB, match_id: str, rnum: int | None) -> int | None:
+    if not match_id or rnum is None:
+        return None
+    for r in db.get_rounds(match_id):
+        if r["round"] == rnum:
+            return r["start_tick"]
+    return None
+
+
 def _attach_match_info(db: DB, items: list) -> None:
-    """Attach match_info + player_info to every item (in place)."""
+    """Attach match_info + player_info + in-round clock to every item."""
     match_cache: dict = {}
     player_cache: dict = {}
+    round_cache: dict = {}
     for it in items:
         mid = it.get("match_id")
         if mid:
@@ -99,6 +112,19 @@ def _attach_match_info(db: DB, items: list) -> None:
             if key not in player_cache:
                 player_cache[key] = _player_info(db, mid, int(sid))
             it["player_info"] = player_cache[key]
+        # in-round clock: (tick - round_start) / tickrate seconds
+        rnum = it.get("round")
+        tick = it.get("tick")
+        if tick is None:
+            tick = it.get("anchor_tick")
+        if mid and rnum is not None and tick is not None:
+            rc_key = (mid, rnum)
+            if rc_key not in round_cache:
+                round_cache[rc_key] = _round_start_tick(db, mid, rnum)
+            start = round_cache[rc_key]
+            if start is not None:
+                tr = (it.get("match_info") or {}).get("tickrate") or 64
+                it["in_round_seconds"] = round((int(tick) - int(start)) / tr, 2)
 
 
 def _json(handler, obj, code=200):

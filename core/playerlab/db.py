@@ -412,6 +412,18 @@ class DB:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         if current < 9:
             self.conn.execute("UPDATE schema_version SET version=9")
+        # v10: real match time (matchtime from .info / filename timestamp /
+        # fallback mtime), distinct from parsed_at which is the analysis time
+        _v10_cols = [
+            ("matches", "match_time", "TEXT"),
+            ("matches", "match_time_source", "TEXT"),
+        ]
+        for table, col, typ in _v10_cols:
+            cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        if current < 10:
+            self.conn.execute("UPDATE schema_version SET version=10")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -421,12 +433,16 @@ class DB:
 
     # ---- matches ----
     def upsert_match(self, m: dict):
+        m = dict(m)
+        m.setdefault("match_time", m.get("match_time", ""))
+        m.setdefault("match_time_source", m.get("match_time_source", ""))
         self.conn.execute(
             """INSERT OR REPLACE INTO matches
                (demo_id, demo_path, map_name, tickrate, player_count, rounds_total,
-                side_swap_round, parsed_at, parser_version)
+                side_swap_round, parsed_at, parser_version, match_time, match_time_source)
                VALUES (:demo_id, :demo_path, :map_name, :tickrate, :player_count,
-                       :rounds_total, :side_swap_round, :parsed_at, :parser_version)""", m)
+                       :rounds_total, :side_swap_round, :parsed_at, :parser_version,
+                       :match_time, :match_time_source)""", m)
         self.conn.commit()
 
     def list_matches(self):
