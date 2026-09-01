@@ -105,9 +105,11 @@ def generate_targets_from_episodes(db: DB, cfg: Config,
     """V1.3 (spec §40-§41, §43-§44): TrainingTargets from repeated Decision
     Episode patterns, with Actionability gate (spec §64).
 
-    V1.3.2 calibration gate (PART E §29): a pattern whose detector state is
-    UNCALIBRATED / EXPERIMENTAL must NOT auto-generate a HIGH-confidence
-    target — it is demoted to a 'possible issue — needs calibration' note.
+    V1.3.2 calibration gate (PART E §29) + V1.3.3 gate v2 (PART N):
+    calibration_map is ELIGIBLE-labels-only (human). A detector with only
+    SIMULATED reviews is UNCALIBRATED -> PAUSED. Even precision 0.95 from
+    simulated data never unpauses a target. HUMAN n<MIN -> UNCALIBRATED ->
+    PAUSED. Only HUMAN n>=MIN + precision>=threshold -> CALIBRATED -> ACTIVE.
     """
     calibration_map = calibration_map or {}
     created = []

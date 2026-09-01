@@ -165,6 +165,24 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                      "rounds": db.get_rounds(demo_id),
                                      "players": players_of_match(db, demo_id),
                                      "decision_points": db.get_dps(demo_id)})
+                elif path == "/api/calibration-session":
+                    """Continuous-review session queue (PART Q): pending HUMAN
+                    samples sorted by detector deficit (coverage balancing)."""
+                    det = q.get("detector", [None])[0]
+                    samples = db.get_calibration_samples(
+                        detector_type=det, review_status="pending", limit=200)
+                    # coverage balancing (PART D §14): detectors with fewest
+                    # human labels first; negative controls interleaved
+                    from .calibration import calibration_stats
+                    stats = calibration_stats(db, cfg).get("detectors", {})
+                    def sort_key(s):
+                        h = stats.get(s["detector_type"], {}).get("human_reviewed_count", 0)
+                        return (0 if s.get("is_negative_control") else 1, h, s["tick"])
+                    samples.sort(key=sort_key)
+                    for s in samples:
+                        s["player_id"] = str(s["player_id"])
+                    _json(self, {"session": samples,
+                                 "ground_truth": calibration_stats(db, cfg)})
                 elif path == "/api/calibration-stats":
                     from .calibration import calibration_stats
                     det = q.get("detector", [None])[0]
@@ -379,20 +397,23 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                         _json(self, {"focus": ctx.to_dict()})
                 elif path.startswith("/api/calibration/") and path.endswith("/review"):
                     sample_id = path[len("/api/calibration/"):-len("/review")]
-                    from .calibration import PREAIM_FP_REASONS, MOVING_SHOT_FP_REASONS
-                    human_label = body.get("human_label", "UNSURE")  # YES/NO/UNSURE
+                    from .calibration import submit_human_annotation
+                    label = body.get("human_label", "UNSURE")  # YES/NO/UNSURE or taxonomy
                     conf = float(body.get("human_confidence", 0.7))
                     fp = body.get("false_positive_reason", "")
-                    db.mark_calibration_reviewed(sample_id, human_label, conf, fp,
-                                                 body.get("notes", ""))
-                    _json(self, {"saved": True, "sample_id": sample_id,
-                                 "human_label": human_label})
+                    ann = submit_human_annotation(db, sample_id, label, conf, fp)
+                    _json(self, {"saved": True, "annotation_id": ann["annotation_id"],
+                                 "label_source": "HUMAN"})
                 elif path == "/api/calibration-review-fp-reasons":
+                    from .calibration import (PREAIM_LABELS, MOVING_SHOT_LABELS,
+                                              DRY_PEEK_LABELS)
                     det = body.get("detector", "")
                     if det == "PREAIM_ERROR":
-                        _json(self, {"reasons": list(PREAIM_FP_REASONS)})
+                        _json(self, {"reasons": list(PREAIM_LABELS)})
                     elif det == "MOVING_SHOT":
-                        _json(self, {"reasons": list(MOVING_SHOT_FP_REASONS)})
+                        _json(self, {"reasons": list(MOVING_SHOT_LABELS)})
+                    elif det == "DRY_PEEK":
+                        _json(self, {"reasons": list(DRY_PEEK_LABELS)})
                     else:
                         _json(self, {"reasons": ["OTHER", "INSUFFICIENT_CONTEXT"]})
                 else:

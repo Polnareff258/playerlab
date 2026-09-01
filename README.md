@@ -1,4 +1,4 @@
-# PlayerLab V1.3.2 — Calibration, Ground Truth & Player-Centric UX
+# PlayerLab V1.3.3 — Validation Hardening, Human Ground Truth & Geometry A/B
 
 本地优先的 CS2 Demo 分析项目。核心目标：
 
@@ -10,6 +10,21 @@ V1 优先证明一条链真实、可靠、可追溯地工作：
 ```
 DecisionPoint → GameState → Similar State Retrieval → Counterfactual Comparison
 ```
+
+V1.3.3 主题：**PlayerLab 说的到底对不对？** 严格区分 measurement /
+interpretation / simulation / human judgment / confidence / ground truth。
+
+- **LabelSource**（HUMAN/SIMULATED/IMPORTED_EXPERT/CONSENSUS）：SIMULATED
+  永不驱动 CalibrationState / TrainingTarget / ReviewMoment / 真实 precision。
+- **双状态**：PipelineValidationState（管线能跑通）vs CalibrationState
+  （真人验证）—— UI 分开显示，模拟 1000 条也只会点亮 Pipeline。
+- **One-to-many CalibrationAnnotation** + ConsensusResolver 接口（未来多人）。
+- **Calibration Session UX**：连续审核 + 快捷键（1=Yes 2=No 3=Unsure S=Skip）。
+- **Geometry A/B 基础设施**（OFF/ON 同批 demo + episode-level diff +
+  复现元数据）—— 资产就绪前诚实输出 `GEOMETRY_AB_PENDING_ASSETS`。
+- **Honest Rules**：无真人标签 → `NO_REAL_CALIBRATION_AVAILABLE`，不伪造。
+
+详见 [docs/V1_3_3_DELTA.md](docs/V1_3_3_DELTA.md) · [docs/HUMAN_CALIBRATION_PROTOCOL.md](docs/HUMAN_CALIBRATION_PROTOCOL.md) · [docs/GEOMETRY_AB_RESULTS.md](docs/GEOMETRY_AB_RESULTS.md) · [docs/DETECTOR_VALIDITY_REPORT.md](docs/DETECTOR_VALIDITY_REPORT.md) · [docs/MANUAL_ASSET_SETUP.md](docs/MANUAL_ASSET_SETUP.md)。
 
 V1.2.1 升级：**Context Grounding**（KnownState + InformationStrength/Direction
 + Tradeability + 保守责任归因 + Review Quota）+ **Optional Model Intelligence**

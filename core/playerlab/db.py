@@ -258,6 +258,38 @@ CREATE INDEX IF NOT EXISTS idx_cs_match ON calibration_samples (match_id, player
 CREATE INDEX IF NOT EXISTS idx_rm_match ON review_moments (match_id, player_id, review_score);
 """
 
+# V1.3.3 validation-hardening schema (schema_version = 8):
+# - label_source on calibration samples (HUMAN / SIMULATED / IMPORTED_EXPERT /
+#   CONSENSUS) so simulated reviews can never drive production state
+# - calibration_annotations: one-to-many (PART L) — every annotation is its
+#   own row, sample-level human_label is a derived aggregation
+# - experiment_runs: geometry A/B reproducibility metadata (PART S)
+V133_SCHEMA = """
+CREATE TABLE IF NOT EXISTS calibration_annotations (
+    annotation_id TEXT PRIMARY KEY,
+    sample_id TEXT, annotator_id TEXT,
+    label_source TEXT, label TEXT, confidence REAL,
+    reason TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS experiment_runs (
+    experiment_id TEXT PRIMARY KEY,
+    mode TEXT,                       -- geometry_off | geometry_on
+    config_hash TEXT, git_commit TEXT, demo_hash TEXT,
+    geometry_version TEXT, detector_version TEXT,
+    episodes_processed INTEGER, created_at TEXT,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ca_sample ON calibration_annotations (sample_id);
+"""
+
+_ADD_COLUMNS_V8 = [
+    ("calibration_samples", "label_source", "TEXT"),       # HUMAN/SIMULATED/...
+    ("calibration_samples", "pipeline_validation", "TEXT"),  # NOT_TESTED/PIPELINE_VALIDATED/PIPELINE_FAILED
+    ("calibration_samples", "is_negative_control", "INTEGER DEFAULT 0"),
+    ("calibration_samples", "geometry_mode", "TEXT"),      # off | on (A/B provenance)
+    ("review_moments", "calibration_reliability", "TEXT"), # from eligible labels only
+]
+
 # Additive columns for existing tables (v7)
 _ADD_COLUMNS_V7 = [
     ("human_annotations", "player_id", "INTEGER"),
@@ -347,6 +379,28 @@ class DB:
                 if col not in cols:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
             self.conn.execute("UPDATE schema_version SET version=7")
+        # V1.3.3 (v8): validation hardening. The V1.3.2 dev/test reviews were
+        # SIMULATED (written by the calibration-demo script); mark them so they
+        # can never drive production CalibrationState (PART A §3 / PART C).
+        if current < 8:
+            self.conn.executescript(V133_SCHEMA)
+            for table, col, typ in _ADD_COLUMNS_V8:
+                cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+                if col not in cols:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            # PART C: existing reviewed samples came from the simulated demo
+            # script -> label_source = SIMULATED
+            self.conn.execute(
+                "UPDATE calibration_samples SET label_source='SIMULATED', "
+                "pipeline_validation='PIPELINE_VALIDATED' "
+                "WHERE review_status='reviewed' AND "
+                "(label_source IS NULL OR label_source='')")
+            # pending samples: no label yet, not tested
+            self.conn.execute(
+                "UPDATE calibration_samples SET label_source='HUMAN', "
+                "pipeline_validation='NOT_TESTED' "
+                "WHERE label_source IS NULL OR label_source=''")
+            self.conn.execute("UPDATE schema_version SET version=8")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -1039,8 +1093,9 @@ class DB:
                 predicted_label, predicted_confidence, evidence_sufficiency,
                 model_version, rule_version, sample_stratum, review_status,
                 human_label, human_confidence, false_positive_reason, notes,
-                reviewed_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                reviewed_at, label_source, pipeline_validation, is_negative_control,
+                geometry_mode)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (s["id"], s.get("match_id"), s.get("player_id"), s.get("round"),
              s.get("tick"), s.get("episode_id"), s["detector_type"],
              s.get("predicted_label"), s.get("predicted_confidence"),
@@ -1048,11 +1103,16 @@ class DB:
              s.get("rule_version"), s.get("sample_stratum", "general"),
              s.get("review_status", "pending"), s.get("human_label"),
              s.get("human_confidence"), s.get("false_positive_reason"),
-             s.get("notes"), s.get("reviewed_at")))
+             s.get("notes"), s.get("reviewed_at"),
+             s.get("label_source", "HUMAN"),
+             s.get("pipeline_validation", "NOT_TESTED"),
+             1 if s.get("is_negative_control") else 0,
+             s.get("geometry_mode", "off")))
         self.conn.commit()
 
     def get_calibration_samples(self, detector_type=None, review_status=None,
-                                match_id=None, player_id=None, limit=1000):
+                                match_id=None, player_id=None, limit=1000,
+                                label_source=None, negative_control=None):
         q = "SELECT * FROM calibration_samples"
         conds, args = [], []
         if detector_type:
@@ -1063,6 +1123,10 @@ class DB:
             conds.append("match_id=?"); args.append(match_id)
         if player_id:
             conds.append("player_id=?"); args.append(player_id)
+        if label_source:
+            conds.append("label_source=?"); args.append(label_source)
+        if negative_control is not None:
+            conds.append("is_negative_control=?"); args.append(1 if negative_control else 0)
         if conds:
             q += " WHERE " + " AND ".join(conds)
         return [dict(r) for r in self.conn.execute(
@@ -1070,19 +1134,67 @@ class DB:
 
     def mark_calibration_reviewed(self, sample_id: str, human_label: str,
                                   human_confidence: float, fp_reason: str,
-                                  notes: str = ""):
+                                  notes: str = "", label_source: str = "HUMAN"):
         self.conn.execute(
             """UPDATE calibration_samples SET review_status='reviewed',
                human_label=?, human_confidence=?, false_positive_reason=?,
-               notes=?, reviewed_at=? WHERE id=?""",
+               notes=?, reviewed_at=?, label_source=? WHERE id=?""",
             (human_label, human_confidence, fp_reason, notes,
-             time.strftime("%Y-%m-%dT%H:%M:%S"), sample_id))
+             time.strftime("%Y-%m-%dT%H:%M:%S"), label_source, sample_id))
         self.conn.commit()
 
     def delete_calibration_samples(self, match_id: str):
         self.conn.execute("DELETE FROM calibration_samples WHERE match_id=?",
                           (match_id,))
         self.conn.commit()
+
+    # ---- V1.3.3 one-to-many calibration annotations (PART L) ----
+    def insert_calibration_annotation(self, a: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO calibration_annotations
+               (annotation_id, sample_id, annotator_id, label_source, label,
+                confidence, reason, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (a["annotation_id"], a["sample_id"], a.get("annotator_id", "local"),
+             a.get("label_source", "HUMAN"), a.get("label", ""),
+             a.get("confidence"), a.get("reason", ""),
+             a.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))))
+        self.conn.commit()
+
+    def get_calibration_annotations(self, sample_id=None, limit=1000):
+        q = "SELECT * FROM calibration_annotations"
+        if sample_id:
+            q += " WHERE sample_id=?"
+            return [dict(r) for r in self.conn.execute(
+                q + " ORDER BY created_at LIMIT ?", (sample_id, limit))]
+        return [dict(r) for r in self.conn.execute(
+            q + f" ORDER BY created_at LIMIT {limit}")]
+
+    def annotations_for_sample(self, sample_id: str) -> list[dict]:
+        return self.get_calibration_annotations(sample_id=sample_id)
+
+    # ---- V1.3.3 experiment runs (PART S) ----
+    def upsert_experiment_run(self, e: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO experiment_runs
+               (experiment_id, mode, config_hash, git_commit, demo_hash,
+                geometry_version, detector_version, episodes_processed,
+                created_at, notes)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (e["experiment_id"], e.get("mode"), e.get("config_hash"),
+             e.get("git_commit"), e.get("demo_hash"), e.get("geometry_version"),
+             e.get("detector_version"), e.get("episodes_processed"),
+             e.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
+             e.get("notes", "")))
+        self.conn.commit()
+
+    def get_experiment_runs(self, experiment_id=None, limit=100):
+        q = "SELECT * FROM experiment_runs"
+        if experiment_id:
+            q += " WHERE experiment_id=?"
+            return [dict(r) for r in self.conn.execute(q, (experiment_id,))]
+        return [dict(r) for r in self.conn.execute(
+            q + f" ORDER BY created_at LIMIT {limit}")]
 
     # ---- V1.3.2 review moments ----
     def replace_review_moments(self, match_id: str, player_id: int,
@@ -1096,13 +1208,14 @@ class DB:
                    (id, match_id, player_id, episode_id, review_score,
                     actionability, evidence_sufficiency, impact, recurrence,
                     training_relevance, is_positive, primary_reason,
-                    why_selected, computed_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    why_selected, computed_at, calibration_reliability)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (m["id"], match_id, player_id, m["episode_id"], m["review_score"],
                  m.get("actionability"), m.get("evidence_sufficiency"),
                  m.get("impact"), m.get("recurrence"), m.get("training_relevance"),
                  1 if m.get("is_positive") else 0, m.get("primary_reason"),
-                 m.get("why_selected"), m.get("computed_at")))
+                 m.get("why_selected"), m.get("computed_at"),
+                 m.get("calibration_reliability")))
         self.conn.commit()
 
     def get_review_moments(self, match_id=None, player_id=None, limit=50):

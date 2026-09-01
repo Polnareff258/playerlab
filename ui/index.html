@@ -60,8 +60,8 @@
 </head>
 <body>
 <header>
-  <h1>PlayerLab <span>V1.3.2</span></h1>
-  <span>Player first · Moment first</span>
+  <h1>PlayerLab <span>V1.3.3</span></h1>
+  <span>Validation Hardening · Human Ground Truth</span>
   <nav>
     <button id="tab-focus" class="on" onclick="goto('focus')">Focus</button>
     <button id="tab-decisions" onclick="goto('decisions')">Decisions</button>
@@ -420,66 +420,75 @@ window.addEventListener("hashchange", () => {
   goto(h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
 });
 
-/* ---------------- Calibration Review Lab (PART D §20-§22) ---------------- */
+/* ---------------- Calibration Review Lab (PART B §9 + D §20-22 + Q session) ---------------- */
+let calSession = [];
+let calIdx = 0;
 async function renderCalibration(el){
-  const { samples } = await api("/api/calibration-samples").catch(async () => {
-    // fallback: gather from first match's players
-    const { matches } = await api("/api/matches");
-    if (!matches.length) return {samples: []};
-    const mid = matches[0].demo_id;
-    const m = await api("/api/matches/"+mid);
-    const p = m.players[0];
-    return api("/api/matches/"+mid+"/players/"+p.steam_id+"/calibration");
-  });
-  const pending = (samples||[]).filter(s=>s.review_status==="pending");
-  const stats = await api("/api/calibration-stats").catch(()=>({detectors:{}}));
-  let html = `<h2>CALIBRATION LAB <span class="muted">(校准判断：先确认系统说得对)</span></h2>`;
-  // detector stats overview
+  const data = await api("/api/calibration-session").catch(()=>({session:[], ground_truth:{detectors:{}}}));
+  calSession = data.session || [];
+  calIdx = 0;
+  const stats = data.ground_truth || {detectors:{}};
   const dets = stats.detectors || {};
-  html += `<div class="card"><table><tr><th>Detector</th><th>Reviewed</th><th>Confirmed</th><th>Precision</th><th>State</th></tr>`;
+  let html = `<h2>CALIBRATION LAB <span class="muted">(Ground Truth 工作流)</span></h2>`;
+  // dual-state display (PART B §9): Pipeline vs Ground Truth never conflated
+  html += `<div class="card"><table>
+    <tr><th>Detector</th><th>Human</th><th>Confirmed</th><th>Precision</th>
+        <th>Ground Truth</th><th>Simulated</th><th>Pipeline</th></tr>`;
   for (const [det, s] of Object.entries(dets)){
-    html += `<tr><td>${esc(det)}</td><td>${s.reviewed}</td><td>${s.confirmed}</td>
-      <td>${s.precision==null?"—":(s.precision*100).toFixed(0)+"%"}</td>
-      <td><span class="chip ${s.calibration_state==="CALIBRATED"?"ok":s.calibration_state==="UNRELIABLE"?"MEDIUM":""}">${esc(s.calibration_state)}</span></td></tr>`;
+    html += `<tr><td>${esc(det)}</td>
+      <td>${s.human_reviewed_count??0}</td><td>${s.human_confirmed_count??0}</td>
+      <td>${s.human_confirmation_rate==null?"—":(s.human_confirmation_rate*100).toFixed(0)+"%"}</td>
+      <td><span class="chip ${s.calibration_state==="CALIBRATED"?"ok":s.calibration_state==="UNRELIABLE"?"MEDIUM":""}">${esc(s.calibration_state||"UNCALIBRATED")}</span></td>
+      <td class="muted">${s.simulated_reviewed_count??0}</td>
+      <td><span class="chip">${esc(s.pipeline_validation_state||"NOT_TESTED")}</span></td></tr>`;
   }
-  if (!Object.keys(dets).length) html += `<tr><td colspan=5 class="muted">暂无校准样本（进入比赛 → 选择玩家 → 校准这个判断）</td></tr>`;
+  if (!Object.keys(dets).length) html += `<tr><td colspan=7 class="muted">暂无校准样本</td></tr>`;
   html += `</table><div class="muted mono" style="font-size:10px">${esc(stats.ground_truth_note||"")}</div></div>`;
-  // one sample at a time
-  html += `<h3>REVIEW <span class="muted">(${pending.length} pending)</span></h3>`;
-  if (!pending.length) html += `<div class="card"><span class="muted">全部已 review 或暂无样本</span></div>`;
-  else {
-    const s = pending[0];
-    const reasons = await api("/api/calibration-review-fp-reasons", {method:"POST",
-      headers:{"Content-Type":"application/json"}, body: JSON.stringify({detector: s.detector_type})}
-    ).catch(()=>({reasons:["OTHER","INSUFFICIENT_CONTEXT"]}));
-    html += `<div class="card">
-      <div class="row"><span class="chip">${esc(s.detector_type)}</span>
-        <span class="mono muted">r${s.round} t${s.tick}</span>
-        <span class="muted">conf ${s.predicted_confidence ?? "—"} · evidence ${esc(s.evidence_sufficiency||"—")}</span></div>
-      <div class="why">System says: <b>${esc(s.predicted_label)}</b> (${esc(s.sample_stratum||"general")})</div>
-      <div class="row" style="margin-top:8px">
-        <span class="muted">Was this a real problem?</span>
-        <button class="btn" onclick="calReview('${s.id}','YES')">Yes</button>
-        <button class="btn" onclick="calReview('${s.id}','NO')">No</button>
-        <button class="btn" onclick="calReview('${s.id}','UNSURE')">Unsure</button>
-      </div>
-      <div class="row" style="margin-top:6px" id="fp-${s.id}">
-        <select id="fpsel-${s.id}" style="max-width:260px">
-          ${reasons.reasons.map(r=>`<option>${esc(r)}</option>`).join("")}
-        </select>
-        <button class="btn" onclick="calReviewFP('${s.id}')">提交 No + 原因</button>
-      </div>
-    </div>`;
-  }
+  html += `<h3>REVIEW SESSION <span class="muted">(${calSession.length} pending · 快捷键 1=Yes 2=No 3=Unsure S=Skip)</span></h3>`;
+  if (!calSession.length) html += `<div class="card"><span class="muted">全部已 review 或暂无样本</span></div>`;
+  else html += `<div id="cal-card"></div><div class="row" style="margin-top:8px">
+    <button class="btn" onclick="calNav(-1)">← Prev</button>
+    <button class="btn" onclick="calNav(1)">Next →</button>
+    <button class="btn" onclick="calSkip()">Skip (S)</button>
+  </div>`;
   el.innerHTML = html;
+  if (calSession.length) renderCalCard();
 }
-async function calReview(sampleId, label){
+async function renderCalCard(){
+  const s = calSession[calIdx];
+  if (!s) return renderCalibration(document.getElementById("app"));
+  const reasons = await api("/api/calibration-review-fp-reasons", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({detector: s.detector_type})}
+  ).catch(()=>({reasons:["OTHER","INSUFFICIENT_CONTEXT"]}));
+  const neg = s.is_negative_control ? `<span class="chip">NEGATIVE CONTROL</span>` : "";
+  document.getElementById("cal-card").innerHTML = `<div class="card">
+    <div class="row"><span class="chip">${esc(s.detector_type)}</span>${neg}
+      <span class="mono muted">r${s.round} t${s.tick}</span>
+      <span class="muted">conf ${s.predicted_confidence ?? "—"} · evidence ${esc(s.evidence_sufficiency||"—")}</span>
+      <span class="muted">${calIdx+1}/${calSession.length}</span></div>
+    <div class="why">System says: <b>${esc(s.predicted_label)}</b> (${esc(s.sample_stratum||"general")})</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" onclick="calReview('${s.id}','YES',1)">Yes (1)</button>
+      <button class="btn" onclick="calReview('${s.id}','NO',1)">No (2)</button>
+      <button class="btn" onclick="calReview('${s.id}','UNSURE',1)">Unsure (3)</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <select id="fpsel-${s.id}" style="max-width:280px">
+        ${reasons.reasons.map(r=>`<option>${esc(r)}</option>`).join("")}
+      </select>
+      <button class="btn" onclick="calReviewFP('${s.id}')">提交 No + 原因</button>
+    </div>
+  </div>`;
+}
+function calNav(delta){ calIdx = Math.max(0, Math.min(calSession.length-1, calIdx+delta)); renderCalCard(); }
+function calSkip(){ calIdx++; if (calIdx >= calSession.length) calIdx = 0; renderCalCard(); }
+async function calReview(sampleId, label, advance){
   try {
     await api("/api/calibration/"+sampleId+"/review", {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({human_label:label, human_confidence:0.8})});
-    toast("校准已保存（original prediction 保留）"); goto("review");
-    location.hash = "#/calibration";
+    toast("HUMAN label 已保存（original prediction 保留）");
+    if (advance) calNav(1);
   } catch(e){ toast(e.message); }
 }
 async function calReviewFP(sampleId){
@@ -487,11 +496,17 @@ async function calReviewFP(sampleId){
   try {
     await api("/api/calibration/"+sampleId+"/review", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({human_label:"NO", human_confidence:0.8,
-                            false_positive_reason:reason})});
-    toast("FP 原因已保存"); location.hash = "#/calibration";
+      body: JSON.stringify({human_label:reason, human_confidence:0.8})});
+    toast("HUMAN label + 原因已保存"); calNav(1);
   } catch(e){ toast(e.message); }
 }
+document.addEventListener("keydown", e => {
+  if (!location.hash.startsWith("#/calibration")) return;
+  if (e.key === "1") { const s = calSession[calIdx]; if (s) calReview(s.id, "YES", 1); }
+  if (e.key === "2") { const s = calSession[calIdx]; if (s) calReview(s.id, "NO", 1); }
+  if (e.key === "3") { const s = calSession[calIdx]; if (s) calReview(s.id, "UNSURE", 1); }
+  if (e.key.toLowerCase() === "s") calSkip();
+});
 goto("focus");
 </script>
 </body>

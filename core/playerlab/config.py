@@ -86,6 +86,13 @@ class Config:
     geometry_nav_dir: str = ""       # .nav assets dir
     geometry_tri_dir: str = ""       # .vphys assets dir
     review_moments_top_n: int = 5    # default Top Review Moments per player
+    # --- V1.3.3 calibration thresholds (PART N: in config, not hardcoded) ---
+    cal_min_for_experimental: int = 5
+    cal_min_for_calibrated: int = 20
+    cal_precision_for_calibrated: float = 0.7
+    cal_precision_for_unreliable: float = 0.4
+    cal_human_quota_per_match: int = 8    # PART D §12: 5-10/match
+    cal_negative_control_share: float = 0.15
 
     # --- V1.2 context & intent ---
     context_window_ticks: int = 256      # ~4 s lookback for TemporalContext

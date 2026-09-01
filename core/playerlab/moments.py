@@ -113,8 +113,8 @@ def rank_review_moments(db: DB, cfg: Config, match_id: str, player_id: int,
                         top_n: int = TOP_N,
                         calibration: dict | None = None) -> list[dict]:
     """Rank episodes into ReviewMoments for a player (PART B §8-§9).
-    calibration: {detector_type: CalibrationState} — uncalibrated detectors
-    are suppressed from the top (PART J §43, §10 gate)."""
+    calibration: {detector_type: CalibrationState} — from ELIGIBLE labels only
+    (PART O v2: simulated reviews never boost review-moment weight)."""
     eps = db.get_decision_episodes(match_id=match_id, player_id=player_id, limit=1000)
     if not eps:
         return []
@@ -126,20 +126,28 @@ def rank_review_moments(db: DB, cfg: Config, match_id: str, player_id: int,
         imp = _impact(ep)
         rec = _recurrence(ep, db)
         train = _training(ep)
-        # calibration gate (§10): uncalibrated detector primitives suppress
+        # calibration gate (§10 + PART O): uncalibrated/experimental detector
+        # primitives suppress; CALIBRATED adds reliability, never from
+        # simulated data
         cal = calibration or {}
         prims = ep.get("execution_primitives") or []
         cal_penalty = 0.0
+        cal_boost = 0.0
         for p in prims:
-            if cal.get(p) in ("UNCALIBRATED", "EXPERIMENTAL"):
+            state = cal.get(p)
+            if state in ("UNCALIBRATED", "EXPERIMENTAL"):
                 cal_penalty = max(cal_penalty, 0.3)
+            elif state == "CALIBRATED":
+                cal_boost = max(cal_boost, 0.1)
+            elif state == "UNRELIABLE":
+                cal_penalty = max(cal_penalty, 0.5)
         # positive moments get the training dimension from the good example
         positive = _is_positive(ep)
         score = (weights["actionability"] * act
                  + weights["sufficiency"] * suff
                  + weights["impact"] * imp
                  + weights["recurrence"] * rec
-                 + weights["training"] * train) * (1.0 - cal_penalty)
+                 + weights["training"] * train) * (1.0 - cal_penalty) + cal_boost
         moments.append({
             "id": f"{ep['id']}-moment", "match_id": match_id,
             "player_id": player_id, "episode_id": ep["id"],
@@ -154,7 +162,12 @@ def rank_review_moments(db: DB, cfg: Config, match_id: str, player_id: int,
                                           cal_penalty),
             "factors": {"actionability": act, "sufficiency": suff,
                         "impact": imp, "recurrence": rec, "training": train,
-                        "calibration_penalty": round(cal_penalty, 3)},
+                        "calibration_penalty": round(cal_penalty, 3),
+                        "calibration_boost": round(cal_boost, 3)},
+            "calibration_reliability": ("CALIBRATED" if cal_boost > 0
+                                         else "UNRELIABLE" if cal_penalty >= 0.5
+                                         else "UNCALIBRATED" if cal_penalty > 0
+                                         else "UNKNOWN"),
             "computed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         })
     # score-first ranking (improvement moments compete fairly); ensure at

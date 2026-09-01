@@ -222,7 +222,9 @@ def test_outcome_independence_kept():
 
 
 def test_calibration_sample_preserves_original():
-    """PART E §23 / PART C §11: original prediction never overwritten."""
+    """PART E §23 / PART C §11: original prediction never overwritten.
+    V1.3.3: annotation is the authoritative one-to-many record."""
+    from playerlab.calibration import submit_human_annotation
     db = DB(":memory:")
     db.upsert_calibration_sample({"id": "s1", "match_id": "m1", "player_id": P1,
                                   "round": 1, "tick": 100, "episode_id": "e1",
@@ -231,15 +233,23 @@ def test_calibration_sample_preserves_original():
                                   "predicted_confidence": 0.8,
                                   "evidence_sufficiency": "MEDIUM",
                                   "sample_stratum": "high-conf"})
-    db.mark_calibration_reviewed("s1", "NO", 0.9, "UNEXPECTED_ENEMY_POSITION")
+    submit_human_annotation(db, "s1", "NO", 0.9, "UNEXPECTED_ENEMY_POSITION")
     s = db.get_calibration_samples(detector_type="PREAIM_ERROR")[0]
     assert s["predicted_label"] == "PREAIM_ERROR"  # original kept
     assert s["human_label"] == "NO" and s["false_positive_reason"] == \
         "UNEXPECTED_ENEMY_POSITION"
+    anns = db.annotations_for_sample("s1")
+    assert len(anns) == 1 and anns[0]["label_source"] == "HUMAN"
     stats = calibration_stats(db, Config())
     det = stats["detectors"]["PREAIM_ERROR"]
-    assert det["reviewed"] == 1 and det["confirmed"] == 0 and det["precision"] == 0.0
-    assert stats["ground_truth_note"].startswith("GROUND_TRUTH_PENDING_HUMAN_REVIEW")
+    # metrics v2: human counts drive state; simulated separated
+    assert det["human_reviewed_count"] == 1
+    assert det["human_confirmed_count"] == 0
+    assert det["human_confirmation_rate"] == 0.0
+    assert det["calibration_state"] in ("UNCALIBRATED", "EXPERIMENTAL")
+    assert det["simulated_reviewed_count"] == 0
+    assert stats["ground_truth_note"].startswith(
+        "NO_REAL_CALIBRATION_AVAILABLE") or "HUMAN labels" in stats["ground_truth_note"]
 
 
 def test_calibration_state_thresholds():

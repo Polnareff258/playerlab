@@ -94,8 +94,15 @@ def main(argv=None):
     sub.add_parser("calibration-stats", help="detector calibration metrics")
     p_crev = sub.add_parser("calibration-review", help="review one calibration sample")
     p_crev.add_argument("sample_id")
-    p_crev.add_argument("label", help="YES / NO / UNSURE")
+    p_crev.add_argument("label", help="YES / NO / UNSURE / taxonomy label")
     p_crev.add_argument("--fp-reason", default="", help="false positive reason")
+    sub.add_parser("recompute-calibration", help="recompute CalibrationState from eligible labels only")
+    p_cex = sub.add_parser("calibration-export", help="export annotations (JSONL/Parquet)")
+    p_cex.add_argument("--out", default="")
+    p_cex.add_argument("--format", default="jsonl", choices=("jsonl", "parquet"))
+    p_ab = sub.add_parser("geometry-ab", help="geometry ON/OFF A/B experiment on a demo")
+    p_ab.add_argument("demo")
+    p_ab.add_argument("--out", default="", help="write full diff JSON")
     p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
     p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
     p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
@@ -384,10 +391,41 @@ def main(argv=None):
                          default=str))
     elif args.cmd == "calibration-review":
         from .db import DB
+        from .calibration import submit_human_annotation
         db = DB(cfg.db_path)
-        db.mark_calibration_reviewed(args.sample_id, args.label, 0.8,
-                                     args.fp_reason)
-        print(f"reviewed {args.sample_id} -> {args.label} (original prediction kept)")
+        ann = submit_human_annotation(db, args.sample_id, args.label, 0.8,
+                                      args.fp_reason)
+        print(f"reviewed {args.sample_id} -> {args.label} "
+              f"(label_source={ann['label_source']}; original prediction kept)")
+    elif args.cmd == "recompute-calibration":
+        from .db import DB
+        from .calibration import recompute_calibration
+        db = DB(cfg.db_path)
+        res = recompute_calibration(db, cfg)
+        for det, s in res["calibration"]["detectors"].items():
+            print(f"{det:<26} human={s['human_reviewed_count']} "
+                  f"sim={s['simulated_reviewed_count']} "
+                  f"state={s['calibration_state']} "
+                  f"pipeline={s['pipeline_validation_state']}")
+        print(res["calibration"]["ground_truth_note"])
+    elif args.cmd == "calibration-export":
+        from .db import DB
+        from .calibration import export_annotations_v2
+        db = DB(cfg.db_path)
+        out = args.out or os.path.join(os.path.dirname(cfg.db_path), "..",
+                                       "backtest", "calibration_export.jsonl")
+        print(f"written: {export_annotations_v2(db, os.path.abspath(out), args.format)}")
+    elif args.cmd == "geometry-ab":
+        from .db import DB
+        from .ab_experiment import diff_geometry_ab
+        db = DB(cfg.db_path)
+        res = diff_geometry_ab(db, cfg, args.demo)
+        print(json.dumps({k: v for k, v in res.items() if k != "episode_diffs"},
+                         ensure_ascii=False, indent=1, default=str))
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(res, fh, ensure_ascii=False, indent=1, default=str)
+            print(f"full diff written: {args.out}")
     elif args.cmd == "annotations":
         from .db import DB
         from .annotation import annotation_stats, export_annotations
