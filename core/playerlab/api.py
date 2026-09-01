@@ -65,16 +65,40 @@ def _match_info(db: DB, match_id: str) -> dict | None:
     }
 
 
+def _player_info(db: DB, match_id: str, steam_id: int | None) -> dict | None:
+    """Player name / team / is_user for an item, resolved from the players
+    table (string steam_id — JS number precision >2^53)."""
+    if steam_id is None or not match_id:
+        return None
+    players = db.get_players(match_id)
+    p = next((x for x in players if int(x["steamid"]) == int(steam_id)), None)
+    if not p:
+        return None
+    return {"steam_id": str(int(p["steamid"])),
+            "display_name": p["name"],
+            "team": p["team_number"],
+            "is_user": bool(p.get("is_user"))}
+
+
 def _attach_match_info(db: DB, items: list) -> None:
-    """Attach match_info to every item carrying a match_id (in place)."""
-    cache: dict = {}
+    """Attach match_info + player_info to every item (in place)."""
+    match_cache: dict = {}
+    player_cache: dict = {}
     for it in items:
         mid = it.get("match_id")
-        if not mid:
-            continue
-        if mid not in cache:
-            cache[mid] = _match_info(db, mid)
-        it["match_info"] = cache[mid]
+        if mid:
+            if mid not in match_cache:
+                match_cache[mid] = _match_info(db, mid)
+            it["match_info"] = match_cache[mid]
+        # player: prefer explicit player_id, else resolve via dp/event refs
+        sid = it.get("player_id")
+        if sid in (None, ""):
+            sid = db.resolve_steamid(it.get("dp_id"), it.get("event_id"))
+        if sid is not None:
+            key = (mid, int(sid))
+            if key not in player_cache:
+                player_cache[key] = _player_info(db, mid, int(sid))
+            it["player_info"] = player_cache[key]
 
 
 def _json(handler, obj, code=200):

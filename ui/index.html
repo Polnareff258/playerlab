@@ -297,6 +297,11 @@ function matchTag(mi){
   if (!mi) return "";
   return `${esc(mi.map_name||"—")} · ${esc(fmtTime(mi.parsed_at))} · ${esc(mi.demo_file||"")}`;
 }
+function playerTag(pi){
+  if (!pi) return "";
+  const star = pi.is_user ? "★ " : "";
+  return `${star}${esc(pi.display_name||"")} <span class="muted">(${t("team")} ${esc(pi.team??"—")})</span>`;
+}
 async function api(path, opts) {
   const r = await fetch(path, opts);
   const j = await r.json().catch(()=>({}));
@@ -424,7 +429,8 @@ async function renderMatch(el, matchId){
   </div>`;
   if (currentFocus){
     commitRender(el, g, html + `<div id="player-view"></div>`);
-    return renderPlayerView(el, matchId, currentFocus);
+    const pv = document.getElementById("player-view");
+    if (pv) return renderPlayerView(pv, matchId, currentFocus);
   }
   commitRender(el, g, html);
 }
@@ -470,7 +476,8 @@ async function renderPlayerView(el, matchId, steamId){
     html += `<div class="card">
       <div class="row">
         <span class="chip ${mm.is_positive?"ok":mm.review_score>=0.6?"MEDIUM":""}">${mm.is_positive?t("goodExample"):esc(mm.primary_reason||"")}</span>
-        <span class="mono muted">${matchTag(d.match_info)} · r${mm.round||ep.round} t${mm.tick||ep.anchor_tick}</span>
+        <span class="mono muted">${matchTag(d.match_info)}</span>
+        <span class="mono muted">${playerTag(d.player_info)} · r${mm.round||ep.round} t${mm.tick||ep.anchor_tick}</span>
         <span class="muted">score ${mm.review_score}</span>
       </div>
       <div class="why"><b>${t("whyYouFought")}</b>: ${esc(ep.strategic_evaluation||"—")}</div>
@@ -528,7 +535,7 @@ async function renderReview(el){
     html += `<div class="rev">
       <div class="row"><span class="chip">${esc(it.item_type)}</span>
         <span class="mono muted">${matchTag(it.match_info)}</span>
-        <span class="mono muted">r${it.round} t${it.tick}</span>
+        <span class="mono muted">${playerTag(it.player_info)} · r${it.round} t${it.tick}</span>
         <span class="muted">priority ${it.priority}</span></div>
       <div class="why">${t("system")}: <b>${esc(it.model_prediction)}</b> · ${t("confidence")} ${it.model_confidence} ·
         ${esc(it.rationale)}</div>
@@ -623,7 +630,8 @@ async function renderDecisions(el){
         <span class="chip ${d.decision_evaluation==="POOR"?"MEDIUM":d.decision_evaluation==="GOOD"?"ok":""}">${esc(d.decision_evaluation)}</span>
         <span class="chip">${esc(d.decision_domain||"")}</span>
         <b>${esc((d.family||"").replace("_"," "))}</b>
-        <span class="mono muted">${matchTag(d.match_info)} · r${d.round} t${d.anchor_tick} p${d.player_id}</span>
+        <span class="mono muted">${matchTag(d.match_info)}</span>
+        <span class="mono muted">${playerTag(d.player_info)} · r${d.round} t${d.anchor_tick}</span>
       </div>
       <div class="why"><b>${t("observed")}</b>: ${esc(d.observed_action)} · ${t("commitment")} ${esc(d.commitment_state)} · ${t("intent")} ${esc(d.intent)} · sufficiency ${esc(d.evidence_sufficiency||"—")}</div>
       <div class="why"><b>${t("whyFight")}</b>: ${why} <span class="muted">(${t("strategic")} ${esc(d.strategic_evaluation||"—")})</span></div>
@@ -693,7 +701,8 @@ async function renderCalCard(){
   if (!card) return;
   card.innerHTML = `<div class="card">
     <div class="row"><span class="chip">${esc(s.detector_type)}</span>${neg}
-      <span class="mono muted">${matchTag(s.match_info)} · r${s.round} t${s.tick}</span>
+      <span class="mono muted">${matchTag(s.match_info)}</span>
+      <span class="mono muted">${playerTag(s.player_info)} · r${s.round} t${s.tick}</span>
       <span class="muted">conf ${s.predicted_confidence ?? "—"} · evidence ${esc(s.evidence_sufficiency||"—")}</span>
       <span class="muted">${calIdx+1}/${calSession.length}</span></div>
     <div class="why">${t("systemSays")}: <b>${esc(s.predicted_label)}</b> (${esc(s.sample_stratum||"general")})</div>
@@ -740,7 +749,25 @@ document.addEventListener("keydown", e => {
 
 /* ================= 启动 ================= */
 applyLang();
-goto("focus");
+(function initialRoute(){
+  const h = location.hash;
+  if (h.startsWith("#/match/")) {
+    const el = $("#app"); el.innerHTML = `<span class="muted">${t("loading")}</span>`;
+    renderMatch(el, h.slice("#/match/".length)).catch(e =>
+      el.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`);
+  } else if (h.startsWith("#/calibration")) {
+    setTab("calibration");
+    renderCalibration($("#app"));
+  } else if (h.includes("decisions")) {
+    goto("decisions");
+  } else if (h.includes("review")) {
+    goto("review");
+  } else if (h.includes("matches")) {
+    goto("matches");
+  } else {
+    goto("focus");
+  }
+})();
 </script>
 </body>
 </html>

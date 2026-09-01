@@ -462,6 +462,29 @@ class DB:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM players WHERE match_id=? ORDER BY team_number, name", (match_id,))]
 
+    def resolve_steamid(self, dp_id=None, event_id=None):
+        """Resolve a steamid from a dp_id / event_id (review items carry no
+        player column; decision_points / root_causes / context_events do)."""
+        if dp_id:
+            r = self.conn.execute(
+                "SELECT steamid FROM decision_points WHERE dp_id=?", (dp_id,)).fetchone()
+            if r:
+                return r["steamid"]
+        if event_id:
+            for tbl, col, sid_col in (("decision_points", "dp_id", "steamid"),
+                                      ("decision_episodes", "id", "player_id"),
+                                      ("root_causes", "event_id", "steamid"),
+                                      ("context_events", "event_ref", "steamid")):
+                try:
+                    r = self.conn.execute(
+                        f"SELECT {sid_col} AS steamid FROM {tbl} WHERE {col}=?",
+                        (event_id,)).fetchone()
+                    if r:
+                        return r["steamid"]
+                except Exception:  # noqa: BLE001
+                    continue
+        return None
+
     # ---- decision points ----
     def insert_dp(self, dp: dict, state: dict, outcome: dict):
         with self.conn:
