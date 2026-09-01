@@ -3,22 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PlayerLab V1.1-alpha — Improvement + Annotation Loop</title>
+<title>PlayerLab — 决策复盘与校准</title>
 <style>
   :root { --bg:#0d1117; --panel:#161b22; --panel2:#1c2430; --border:#2d3748;
           --text:#d7dde6; --muted:#8b98a9; --accent:#4da3ff; --ok:#3fb950;
           --warn:#d29922; --bad:#f85149; --mono:ui-monospace,Consolas,monospace; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
-         font:14px/1.55 -apple-system,"Segoe UI",Roboto,sans-serif; }
+         font:14px/1.55 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; }
   header { display:flex; align-items:baseline; gap:18px; padding:12px 22px;
-           border-bottom:1px solid var(--border); background:var(--panel); }
+           border-bottom:1px solid var(--border); background:var(--panel); flex-wrap:wrap; }
   header h1 { font-size:16px; margin:0; }
   header span { color:var(--muted); font-size:12px; }
-  nav { display:flex; gap:6px; }
+  nav { display:flex; gap:6px; flex-wrap:wrap; }
   nav button { background:transparent; color:var(--muted); border:1px solid transparent;
                border-radius:6px; padding:5px 12px; cursor:pointer; font-size:13px; }
   nav button.on { color:var(--text); border-color:var(--border); background:var(--panel2); }
+  #lang-btn { margin-left:auto; background:transparent; color:var(--muted);
+              border:1px solid var(--border); border-radius:6px; padding:4px 10px;
+              cursor:pointer; font-size:12px; }
+  #lang-btn:hover { color:var(--text); border-color:var(--accent); }
   #app { padding:18px 22px; max-width:1150px; margin:0 auto; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px;
           padding:14px 16px; margin-bottom:14px; }
@@ -61,7 +65,7 @@
 <body>
 <header>
   <h1>PlayerLab <span>V1.3.3</span></h1>
-  <span>Validation Hardening · Human Ground Truth</span>
+  <span id="header-sub">Validation Hardening · Human Ground Truth</span>
   <nav>
     <button id="tab-focus" class="on" onclick="goto('focus')">Focus</button>
     <button id="tab-decisions" onclick="goto('decisions')">Decisions</button>
@@ -69,11 +73,217 @@
     <button id="tab-review" onclick="goto('review')">Review</button>
     <button id="tab-calibration" onclick="location.hash='#/calibration'">Calibration</button>
   </nav>
+  <button id="lang-btn" onclick="toggleLang()">中 / EN</button>
 </header>
 <div id="app"></div>
 <div id="toast"></div>
 <script>
 "use strict";
+/* ================= i18n（界面中文，专有词保留英文） ================= */
+const I18N = {
+  zh: {
+    headerSub: "决策复盘 · 校准 · 玩家视角",
+    loading: "加载中…",
+    // 导航（专有词保留英文）
+    tabFocus: "Focus", tabDecisions: "Decisions", tabMatches: "Matches",
+    tabReview: "Review", tabCalibration: "Calibration",
+    // Focus 首页
+    currentFocus: "当前训练焦点",
+    modelIntel: "模型智能",
+    noTarget: "暂无 ACTIVE TrainingTarget。运行 python3 -m playerlab.cli alpha <demo.dem> 后生成；或历史样本不足时返回 INSUFFICIENT_EVIDENCE。",
+    baseline: "基线", current: "当前", goal: "目标", progress: "进展",
+    when: "WHEN", do_: "DO", avoid: "AVOID",
+    whyTarget: "为什么选这个目标？",
+    freq: "频率", impact: "影响", conf: "置信度", trainability: "可训练性", level: "等级",
+    matchesMe: "这符合我的情况 YES", partially: "PARTIALLY",
+    belowThreshold: "未达门槛的模式（不生成目标）",
+    belowThresholdReason: "样本不足或置信过低 → INSUFFICIENT_EVIDENCE",
+    feedbackSaved: "反馈已保存（HumanAnnotation）",
+    // Matches / Focus Player
+    demoLib: "Demo 库",
+    match: "比赛", map: "地图", rounds: "局数", parsedAt: "解析时间",
+    noDemos: "还没有 demo：python3 -m playerlab.cli alpha <demo.dem>",
+    focusPlayer: "FOCUS PLAYER（焦点玩家）",
+    selectPlayer: "— 选择要分析的玩家 —",
+    team: "队伍",
+    thisIsMe: "This is me ★（这是我）",
+    rememberedNote: "★ = 已记住的用户（默认焦点）",
+    selectPlayerFirst: "请先选择玩家",
+    rememberedOk: "已记住：This is me ★",
+    // Player Overview / Review Moments
+    decisionEpisodes: "个决策片段",
+    strong: "优势", needsReview: "需复盘",
+    goodShare: "合理率",
+    topReviewMoments: "TOP REVIEW MOMENTS（最值得回看的瞬间）",
+    noMoments: "暂无 Moments（先运行 alpha 管线）",
+    goodExample: "GOOD EXAMPLE（好的示范）",
+    whyYouFought: "WHY YOU FOUGHT（为何接战）",
+    howYouFought: "HOW YOU FOUGHT（怎么接战）",
+    howYouExecuted: "HOW YOU EXECUTED（怎么执行的）",
+    issues: "问题点",
+    whySelected: "选中原因",
+    evidence: "证据", actionability: "可行动性",
+    calibrateThis: "校准这个判断",
+    viewAll: "查看全部决策",
+    noCalSamples: "暂无校准样本",
+    // Review
+    reviewQueue: "Review Queue（审核队列）",
+    reviewQueueNote: "每场 3–5 条，低置信高影响优先",
+    noReview: "暂无待审样本（标注会写入 HumanAnnotation，预测与纠正分离保存）",
+    intentCloser: "Intent 更接近？",
+    preferCandidate: "偏好哪个候选？",
+    decisionWas: "Decision 是…？",
+    correct: "正确", wrong: "错误", partially: "部分正确", unsure: "不确定",
+    candidateCompare: "候选比较（当时局面哪个更合理）？",
+    system: "系统判定", confidence: "置信度",
+    doesThisLookRight: "这个判定对吗？",
+    comment: "备注（可选）",
+    annStats: "标注统计",
+    annSaved: "标注已保存",
+    prefSaved: "偏好已保存",
+    decisionPrefSaved: "决策候选偏好已保存",
+    // Decisions
+    decisions: "DECISIONS（决策片段）",
+    noDecisions: "暂无 DecisionEpisode（运行 alpha 管线后生成）",
+    youWere: "当时局面", infoNeed: "信息需求", riskTolerance: "风险容忍度",
+    contextUnknown: "上下文未知",
+    observed: "OBSERVED（实际动作）",
+    commitment: "承诺状态", intent: "意图",
+    whyFight: "WHY FIGHT（为何接战）",
+    strategic: "战略层",
+    infoAdvantage: "信息优势",
+    selfAccuracy: "自身精度代价", oppTracking: "敌方追踪难度",
+    alternatives: "备选动作",
+    // Calibration
+    calLab: "CALIBRATION LAB（校准实验室）",
+    calLabNote: "Ground Truth 工作流：先确认系统说得对",
+    detector: "Detector", human: "人工", confirmed: "确认", precision: "精度",
+    groundTruth: "Ground Truth", simulated: "模拟", pipeline: "Pipeline",
+    noCalSamplesRow: "暂无校准样本",
+    reviewSession: "REVIEW SESSION（审核会话）",
+    sessionNote: "待审 · 快捷键 1=是 2=否 3=不确定 S=跳过",
+    allReviewed: "全部已 review 或暂无样本",
+    prev: "← 上一个", next: "下一个 →", skip: "跳过 (S)",
+    negativeControl: "NEGATIVE CONTROL（阴性对照）",
+    systemSays: "系统判定",
+    wasRealProblem: "这真的是问题吗？",
+    submitNoReason: "提交 No + 原因",
+    humanLabelSaved: "HUMAN 标注已保存（保留原始预测）",
+    humanLabelReasonSaved: "HUMAN 标注 + 原因已保存",
+  },
+  en: {
+    headerSub: "Validation Hardening · Human Ground Truth",
+    loading: "loading…",
+    tabFocus: "Focus", tabDecisions: "Decisions", tabMatches: "Matches",
+    tabReview: "Review", tabCalibration: "Calibration",
+    currentFocus: "CURRENT FOCUS",
+    modelIntel: "MODEL INTELLIGENCE",
+    noTarget: "No ACTIVE TrainingTarget yet. Run: python3 -m playerlab.cli alpha <demo.dem>; or INSUFFICIENT_EVIDENCE when history is thin.",
+    baseline: "Baseline", current: "Current", goal: "Goal", progress: "Progress",
+    when: "WHEN", do_: "DO", avoid: "AVOID",
+    whyTarget: "Why this target?",
+    freq: "Frequency", impact: "Impact", conf: "Confidence", trainability: "Trainability", level: "Level",
+    matchesMe: "This matches me YES", partially: "PARTIALLY",
+    belowThreshold: "Patterns below threshold (no target)",
+    belowThresholdReason: "insufficient samples or low confidence → INSUFFICIENT_EVIDENCE",
+    feedbackSaved: "Feedback saved (HumanAnnotation)",
+    demoLib: "Demo Library",
+    match: "Match", map: "Map", rounds: "Rounds", parsedAt: "Parsed",
+    noDemos: "No demos yet: python3 -m playerlab.cli alpha <demo.dem>",
+    focusPlayer: "FOCUS PLAYER",
+    selectPlayer: "— select a player to analyze —",
+    team: "team",
+    thisIsMe: "This is me ★",
+    rememberedNote: "★ = remembered user (default focus)",
+    selectPlayerFirst: "select a player first",
+    rememberedOk: "Remembered: This is me ★",
+    decisionEpisodes: "decision episodes",
+    strong: "Strong", needsReview: "Needs review",
+    goodShare: "good",
+    topReviewMoments: "TOP REVIEW MOMENTS",
+    noMoments: "No moments yet (run the alpha pipeline first)",
+    goodExample: "GOOD EXAMPLE",
+    whyYouFought: "WHY YOU FOUGHT",
+    howYouFought: "HOW YOU FOUGHT",
+    howYouExecuted: "HOW YOU EXECUTED",
+    issues: "issues",
+    whySelected: "Why selected",
+    evidence: "evidence", actionability: "actionability",
+    calibrateThis: "Calibrate this call",
+    viewAll: "View all decisions",
+    noCalSamples: "No calibration samples",
+    reviewQueue: "Review Queue",
+    reviewQueueNote: "3–5 per match, low-confidence high-impact first",
+    noReview: "Nothing to review (annotations go to HumanAnnotation; prediction and correction stay separate)",
+    intentCloser: "Intent closer to?",
+    preferCandidate: "Prefer which candidate?",
+    decisionWas: "Decision was…",
+    correct: "Correct", wrong: "Wrong", partially: "Partially", unsure: "Unsure",
+    candidateCompare: "Candidate comparison (which was more reasonable)?",
+    system: "System", confidence: "confidence",
+    doesThisLookRight: "Does this look right?",
+    comment: "comment (optional)",
+    annStats: "Annotation Stats",
+    annSaved: "Annotation saved",
+    prefSaved: "Preference saved",
+    decisionPrefSaved: "Decision preference saved",
+    decisions: "DECISIONS",
+    noDecisions: "No DecisionEpisodes yet (run the alpha pipeline first)",
+    youWere: "You were", infoNeed: "info need", riskTolerance: "risk tolerance",
+    contextUnknown: "context unknown",
+    observed: "OBSERVED",
+    commitment: "commitment", intent: "intent",
+    whyFight: "WHY FIGHT",
+    strategic: "strategic",
+    infoAdvantage: "info advantage",
+    selfAccuracy: "self-accuracy", oppTracking: "opponent tracking",
+    alternatives: "Alternatives",
+    calLab: "CALIBRATION LAB",
+    calLabNote: "Ground Truth workflow: verify what the system says first",
+    detector: "Detector", human: "Human", confirmed: "Confirmed", precision: "Precision",
+    groundTruth: "Ground Truth", simulated: "Simulated", pipeline: "Pipeline",
+    noCalSamplesRow: "No calibration samples yet",
+    reviewSession: "REVIEW SESSION",
+    sessionNote: "pending · keys 1=Yes 2=No 3=Unsure S=Skip",
+    allReviewed: "All reviewed or no samples",
+    prev: "← Prev", next: "Next →", skip: "Skip (S)",
+    negativeControl: "NEGATIVE CONTROL",
+    systemSays: "System says",
+    wasRealProblem: "Was this a real problem?",
+    submitNoReason: "Submit No + reason",
+    humanLabelSaved: "HUMAN label saved (original prediction kept)",
+    humanLabelReasonSaved: "HUMAN label + reason saved",
+  }
+};
+let LANG = localStorage.getItem("playerlab_lang") || "zh";
+function t(key){ return (I18N[LANG] && I18N[LANG][key]) || I18N.zh[key] || key; }
+function toggleLang(){
+  LANG = LANG === "zh" ? "en" : "zh";
+  localStorage.setItem("playerlab_lang", LANG);
+  document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
+  applyLang();
+  const h = location.hash;
+  if (h.startsWith("#/match/")) {
+    const mid = h.slice("#/match/".length);
+    renderMatch($("#app"), mid).catch(()=>{});
+  } else if (h.startsWith("#/calibration")) {
+    renderCalibration($("#app")).catch(()=>{});
+  } else if (h) {
+    const tgt = h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus";
+    goto(tgt);
+  } else {
+    goto("focus");
+  }
+}
+function applyLang(){
+  document.getElementById("header-sub").textContent = t("headerSub");
+  document.getElementById("tab-focus").textContent = t("tabFocus");
+  document.getElementById("tab-decisions").textContent = t("tabDecisions");
+  document.getElementById("tab-matches").textContent = t("tabMatches");
+  document.getElementById("tab-review").textContent = t("tabReview");
+  document.getElementById("tab-calibration").textContent = t("tabCalibration");
+}
+
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const pct = x => x==null ? "—" : (x*100).toFixed(0)+"%";
@@ -83,12 +293,12 @@ async function api(path, opts) {
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
 }
-function toast(m){ const t=$("#toast"); t.textContent=m; t.style.display="block"; setTimeout(()=>t.style.display="none",2600); }
+function toast(m){ const t2=$("#toast"); t2.textContent=m; t2.style.display="block"; setTimeout(()=>t2.style.display="none",2600); }
 function setTab(t){ ["focus","decisions","matches","review"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
 
 async function goto(t){
   setTab(t);
-  const el=$("#app"); el.innerHTML=`<span class="muted">loading…</span>`;
+  const el=$("#app"); el.innerHTML=`<span class="muted">${t("loading")}</span>`;
   try {
     if (t==="focus") return renderFocus(el);
     if (t==="decisions") return renderDecisions(el);
@@ -97,63 +307,62 @@ async function goto(t){
   } catch(e){ el.innerHTML=`<span style="color:var(--bad)">${esc(e.message)}</span>`; }
 }
 
-/* ---------------- Focus (CURRENT FOCUS 首页) ---------------- */
+/* ---------------- Focus（当前训练焦点） ---------------- */
 async function renderFocus(el){
   const { focus } = await api("/api/focus");
   const { bottlenecks } = await api("/api/bottlenecks");
   const { patterns } = await api("/api/patterns");
-  let html = `<h2>CURRENT FOCUS</h2>`;
+  let html = `<h2>${t("currentFocus")}</h2>`;
   const mi = await api("/api/model-intelligence").catch(()=>null);
   if (mi && mi.model_intelligence){
     const m = mi.model_intelligence;
     const stCls = m.status==="CONNECTED"?"ok":"MEDIUM";
     html += `<div class="card"><div class="row">
-      <span class="chip ${stCls}">MODEL INTELLIGENCE: ${esc(m.status)}</span>
+      <span class="chip ${stCls}">${t("modelIntel")}: ${esc(m.status)}</span>
       <span class="muted">provider=${esc(m.provider)} model=${esc(m.model_version||"—")}</span>
       <span class="muted">tasks: ${(m.loaded_tasks||[]).map(esc).join(", ")||"—"}</span>
     </div>
     <div class="muted mono" style="font-size:11px;margin-top:6px">${esc(m.note||"")}</div></div>`;
   }
   if (!focus.length){
-    html += `<div class="card"><span class="muted">暂无 ACTIVE TrainingTarget。
-      运行: python3 -m playerlab.cli alpha &lt;demo.dem&gt; 后生成；或历史样本不足时返回 INSUFFICIENT_EVIDENCE。</span></div>`;
+    html += `<div class="card"><span class="muted">${t("noTarget")}</span></div>`;
   }
-  for (const t of focus){
-    const cur = t.progress ?? 0;
-    const cue = t.next_match_cue || {};
+  for (const ft of focus){
+    const cur = ft.progress ?? 0;
+    const cue = ft.next_match_cue || {};
     html += `<div class="card">
-      <div class="row"><span class="chip">${esc(t.status)}</span><span class="chip ${esc(t.category==="Macro Decision"?"MEDIUM":"ok")}">${esc(t.category)}</span>
-        <b>${esc(t.name)}</b><span class="muted">conf=${t.confidence}</span></div>
+      <div class="row"><span class="chip">${esc(ft.status)}</span><span class="chip ${esc(ft.category==="Macro Decision"?"MEDIUM":"ok")}">${esc(ft.category)}</span>
+        <b>${esc(ft.name)}</b><span class="muted">conf=${ft.confidence}</span></div>
       <div class="row stat" style="margin-top:8px">
-        <span>Baseline <b>${pct(t.baseline)}</b></span>
-        <span>Current <b>${pct(t.baseline*(1-cur))}</b></span>
-        <span>Goal <b>${pct(t.goal)}</b></span>
-        <span>Progress <b>${(cur*100).toFixed(0)}%</b></span>
+        <span>${t("baseline")} <b>${pct(ft.baseline)}</b></span>
+        <span>${t("current")} <b>${pct(ft.baseline*(1-cur))}</b></span>
+        <span>${t("goal")} <b>${pct(ft.goal)}</b></span>
+        <span>${t("progress")} <b>${(cur*100).toFixed(0)}%</b></span>
       </div>
       <div class="bar"><i style="width:${Math.min(100, cur*100)}%"></i></div>
-      <div class="cue"><b>WHEN</b> ${esc(cue.when||t.trigger||"")}<br>
-        <b>DO</b> ${esc(cue.do||t.replacement_behavior||"")}<br>
-        <b>AVOID</b> ${esc(cue.avoid||t.undesired_behavior||"")}</div>
-      <h3>Why this target?</h3>
-      <table><tr><th>Frequency</th><th>Impact</th><th>Confidence</th><th>Trainability</th><th>Level</th></tr>
-      ${bottlenecks.filter(b=>b.pattern_type===t.pattern_type).map(b=>`<tr>
+      <div class="cue"><b>${t("when")}</b> ${esc(cue.when||ft.trigger||"")}<br>
+        <b>${t("do_")}</b> ${esc(cue.do||ft.replacement_behavior||"")}<br>
+        <b>${t("avoid")}</b> ${esc(cue.avoid||ft.undesired_behavior||"")}</div>
+      <h3>${t("whyTarget")}</h3>
+      <table><tr><th>${t("freq")}</th><th>${t("impact")}</th><th>${t("conf")}</th><th>${t("trainability")}</th><th>${t("level")}</th></tr>
+      ${bottlenecks.filter(b=>b.pattern_type===ft.pattern_type).map(b=>`<tr>
         <td>${b.frequency}</td><td>${b.impact}</td><td>${b.confidence}</td>
         <td>${b.trainability}</td><td><span class="chip ${b.level}">${b.level}</span></td></tr>`).join("")||"<tr><td colspan=5 class=muted>—</td></tr>"}
       </table>
       <div class="muted mono" style="font-size:11px;margin-top:6px">
-        ${patterns.filter(p=>p.pattern_type===t.pattern_type).map(p=>
+        ${patterns.filter(p=>p.pattern_type===ft.pattern_type).map(p=>
           `pattern: n=${p.sample_count} rate=${p.violation_rate} cf=${p.counterfactual_support}`).join(" · ")}
       </div>
       <div class="row" style="margin-top:8px">
-        <button class="btn" onclick="feedback('${t.target_id}','YES')">这符合我的情况 YES</button>
-        <button class="btn" onclick="feedback('${t.target_id}','PARTIALLY')">PARTIALLY</button>
-        <button class="btn" onclick="feedback('${t.target_id}','NO')">NO</button>
+        <button class="btn" onclick="feedback('${ft.target_id}','YES')">${t("matchesMe")}</button>
+        <button class="btn" onclick="feedback('${ft.target_id}','PARTIALLY')">${t("partially")}</button>
+        <button class="btn" onclick="feedback('${ft.target_id}','NO')">NO</button>
       </div>
     </div>`;
   }
   const other = bottlenecks.filter(b=>!b.eligible);
-  if (other.length) html += `<div class="card"><h3>未达门槛的模式（不生成目标）</h3>` +
-    other.map(b=>`<div class="muted mono">${esc(b.pattern_type)}: 样本不足或置信过低 → INSUFFICIENT_EVIDENCE</div>`).join("") + `</div>`;
+  if (other.length) html += `<div class="card"><h3>${t("belowThreshold")}</h3>` +
+    other.map(b=>`<div class="muted mono">${esc(b.pattern_type)}: ${t("belowThresholdReason")}</div>`).join("") + `</div>`;
   el.innerHTML = html;
 }
 async function feedback(targetId, label){
@@ -161,40 +370,39 @@ async function feedback(targetId, label){
     await api("/api/review/null/annotation", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({annotation_type:"target_feedback", human_label:label, reason_code:"OTHER",
         match_id:"", round:0, tick:0, event_id:"", dp_id:targetId})});
-    toast("反馈已保存（HumanAnnotation）");
+    toast(t("feedbackSaved"));
   } catch(e){ toast(e.message); }
 }
 
-/* ---------------- Matches (Player-Centric Match Flow) ---------------- */
+/* ---------------- Matches（比赛库） ---------------- */
 async function renderMatches(el){
   const { matches } = await api("/api/matches");
-  let html = `<h2>Demo 库</h2><div class="card">` +
-    (matches.length ? `<table><tr><th>Match</th><th>Map</th><th>Rounds</th><th>解析时间</th></tr>` +
+  let html = `<h2>${t("demoLib")}</h2><div class="card">` +
+    (matches.length ? `<table><tr><th>${t("match")}</th><th>${t("map")}</th><th>${t("rounds")}</th><th>${t("parsedAt")}</th></tr>` +
       matches.map(m=>`<tr class="click" onclick="location.hash='#/match/${m.demo_id}'">
         <td class="mono">${esc(m.demo_id.slice(0,12))}…</td><td>${esc(m.map_name)}</td>
         <td>${m.rounds_total}</td><td class="muted">${esc(m.parsed_at)}</td></tr>`).join("") + `</table>`
-      : `<span class="muted">还没有 demo：python3 -m playerlab.cli alpha &lt;demo.dem&gt;</span>`) + `</div>`;
+      : `<span class="muted">${t("noDemos")}</span>`) + `</div>`;
   el.innerHTML = html;
 }
 
-/* ---------------- Match entry: select Focus Player (§6-§7) ---------------- */
+/* ---------------- 比赛入口：选择 Focus Player ---------------- */
 async function renderMatch(el, matchId){
   const m = await api("/api/matches/"+matchId);
   const match = m.match;
-  let html = `<h2>${esc(match.map_name)} <span class="muted">${match.rounds_total} rounds</span></h2>`;
-  // focus player selector (never assume owner, PART A §5)
+  let html = `<h2>${esc(match.map_name)} <span class="muted">${match.rounds_total} ${t("rounds")}</span></h2>`;
   const f = await api("/api/focus-player?match="+matchId).catch(()=>({focus:null}));
   const currentFocus = f.focus && f.focus.steam_id ? f.focus.steam_id : null;
   html += `<div class="card">
-    <div class="row"><b>FOCUS PLAYER</b>
+    <div class="row"><b>${t("focusPlayer")}</b>
       <select id="focus-sel" onchange="selectFocus('${matchId}')">
-        <option value="">— 选择要分析的玩家 —</option>
+        <option value="">${t("selectPlayer")}</option>
         ${m.players.map(p=>`<option value="${p.steam_id}" ${p.steam_id===currentFocus?"selected":""}>
-          ${esc(p.display_name)} ${p.is_user?"★":""} <span class="muted">(team ${p.team})</span></option>`).join("")}
+          ${esc(p.display_name)} ${p.is_user?"★":""} <span class="muted">(${t("team")} ${p.team})</span></option>`).join("")}
       </select>
-      <button class="btn" onclick="rememberFocus('${matchId}')">This is me ★</button>
+      <button class="btn" onclick="rememberFocus('${matchId}')">${t("thisIsMe")}</button>
     </div>
-    <div class="muted mono" style="font-size:11px;margin-top:4px">★ = remembered user (default focus)</div>
+    <div class="muted mono" style="font-size:11px;margin-top:4px">${t("rememberedNote")}</div>
   </div>`;
   if (currentFocus){
     html += `<div id="player-view"></div>`;
@@ -212,14 +420,14 @@ async function selectFocus(matchId){
 }
 async function rememberFocus(matchId){
   const sid = $("#focus-sel").value;
-  if (!sid) return toast("先选择玩家");
+  if (!sid) return toast(t("selectPlayerFirst"));
   await api("/api/remember-player", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({match_id:matchId, steam_id:sid, remember:true})});
-  toast("已记住：This is me ★");
+  toast(t("rememberedOk"));
   location.hash = "#/match/"+matchId;
 }
 
-/* ---------------- Player Match Overview + Top Review Moments (§7-§9, §34) ---------------- */
+/* ---------------- Player Overview + Top Review Moments ---------------- */
 async function renderPlayerView(el, matchId, steamId){
   const [ov, mom] = await Promise.all([
     api("/api/matches/"+matchId+"/players/"+steamId+"/overview").catch(()=>({overview:null})),
@@ -228,13 +436,13 @@ async function renderPlayerView(el, matchId, steamId){
   const o = ov.overview || {};
   let html = `<div class="card"><div class="row">
       <span class="chip ${o.summary==="MOSTLY REASONABLE"?"ok":o.summary==="NEEDS REVIEW"?"MEDIUM":""}">${esc(o.summary||"—")}</span>
-      <span class="muted">${o.episodes||0} decision episodes</span></div>`;
-  if (o.strengths && o.strengths.length) html += `<div class="why"><b>Strong:</b> ${esc(o.strengths[0].family.replace("_"," "))} (good ${Math.round((o.strengths[0].good_share||0)*100)}%)</div>`;
-  if (o.needs_review && o.needs_review.length) html += `<div class="why"><b>Needs review:</b> ${esc(o.needs_review[0].family.replace("_"," "))} (good ${Math.round((o.needs_review[0].good_share||0)*100)}%)</div>`;
+      <span class="muted">${o.episodes||0} ${t("decisionEpisodes")}</span></div>`;
+  if (o.strengths && o.strengths.length) html += `<div class="why"><b>${t("strong")}:</b> ${esc(o.strengths[0].family.replace("_"," "))} (${t("goodShare")} ${Math.round((o.strengths[0].good_share||0)*100)}%)</div>`;
+  if (o.needs_review && o.needs_review.length) html += `<div class="why"><b>${t("needsReview")}:</b> ${esc(o.needs_review[0].family.replace("_"," "))} (${t("goodShare")} ${Math.round((o.needs_review[0].good_share||0)*100)}%)</div>`;
   html += `<div class="muted mono" style="font-size:10px">${esc((o.explainable||{}).note||"")}</div></div>`;
-  html += `<h3>TOP REVIEW MOMENTS <span class="muted">(最值得回看的瞬间)</span></h3>`;
+  html += `<h3>${t("topReviewMoments")}</h3>`;
   const momList = mom.moments || [];
-  if (!momList.length) html += `<div class="card"><span class="muted">暂无 moments（先运行 alpha 管线）</span></div>`;
+  if (!momList.length) html += `<div class="card"><span class="muted">${t("noMoments")}</span></div>`;
   for (const mm of momList){
     const d = await api("/api/decisions/"+mm.episode_id).catch(()=>({decision:null}));
     const ep = d.decision || {};
@@ -243,18 +451,18 @@ async function renderPlayerView(el, matchId, steamId){
     const prims = (ep.execution_primitives||[]).join(", ") || "—";
     html += `<div class="card">
       <div class="row">
-        <span class="chip ${mm.is_positive?"ok":mm.review_score>=0.6?"MEDIUM":""}">${mm.is_positive?"GOOD EXAMPLE":esc(mm.primary_reason||"")}</span>
+        <span class="chip ${mm.is_positive?"ok":mm.review_score>=0.6?"MEDIUM":""}">${mm.is_positive?t("goodExample"):esc(mm.primary_reason||"")}</span>
         <span class="mono muted">r${mm.round||ep.round} t${mm.tick||ep.anchor_tick}</span>
         <span class="muted">score ${mm.review_score}</span>
       </div>
-      <div class="why"><b>WHY YOU FOUGHT</b>: ${esc(ep.strategic_evaluation||"—")}</div>
-      ${ep.engagement_evaluation?`<div class="why"><b>HOW YOU FOUGHT</b>: ${esc(em.method||"—")} · ${esc(ep.engagement_evaluation||"—")}</div>`:""}
-      ${ep.execution_evaluation?`<div class="why"><b>HOW YOU EXECUTED</b>: ${esc(ep.execution_evaluation||"—")} · issues: ${esc(prims)}</div>`:""}
-      <div class="muted" style="font-size:12px">Why selected: ${esc(mm.why_selected||"")}</div>
-      <div class="muted mono" style="font-size:10px">evidence ${esc(mm.evidence_sufficiency||"—")} · actionability ${esc(mm.actionability||"—")}</div>
+      <div class="why"><b>${t("whyYouFought")}</b>: ${esc(ep.strategic_evaluation||"—")}</div>
+      ${ep.engagement_evaluation?`<div class="why"><b>${t("howYouFought")}</b>: ${esc(em.method||"—")} · ${esc(ep.engagement_evaluation||"—")}</div>`:""}
+      ${ep.execution_evaluation?`<div class="why"><b>${t("howYouExecuted")}</b>: ${esc(ep.execution_evaluation||"—")} · ${t("issues")}: ${esc(prims)}</div>`:""}
+      <div class="muted" style="font-size:12px">${t("whySelected")}: ${esc(mm.why_selected||"")}</div>
+      <div class="muted mono" style="font-size:10px">${t("evidence")} ${esc(mm.evidence_sufficiency||"—")} · ${t("actionability")} ${esc(mm.actionability||"—")}</div>
       <div class="row" style="margin-top:6px">
-        <button class="btn" onclick="reviewCal('${matchId}','${steamId}')">校准这个判断</button>
-        <button class="btn" onclick="location.hash='#/decisions'">View all decisions</button>
+        <button class="btn" onclick="reviewCal('${matchId}','${steamId}')">${t("calibrateThis")}</button>
+        <button class="btn" onclick="location.hash='#/decisions'">${t("viewAll")}</button>
       </div>
     </div>`;
   }
@@ -262,39 +470,39 @@ async function renderPlayerView(el, matchId, steamId){
 }
 async function reviewCal(matchId, steamId){
   const { samples } = await api("/api/matches/"+matchId+"/players/"+steamId+"/calibration").catch(()=>({samples:[]}));
-  if (!samples.length) return toast("暂无校准样本");
+  if (!samples.length) return toast(t("noCalSamples"));
   location.hash = "#/calibration";
 }
 
-/* ---------------- Review (人工标注) ---------------- */
+/* ---------------- Review（人工标注） ---------------- */
 async function renderReview(el){
   const { review } = await api("/api/review");
-  let html = `<h2>Review Queue <span class="muted">(每场 3–5 条，低置信高影响优先)</span></h2>`;
-  if (!review.length) html += `<div class="card"><span class="muted">暂无待审样本（标注会写入 HumanAnnotation，预测与纠正分离保存）</span></div>`;
+  let html = `<h2>${t("reviewQueue")} <span class="muted">(${t("reviewQueueNote")})</span></h2>`;
+  if (!review.length) html += `<div class="card"><span class="muted">${t("noReview")}</span></div>`;
   for (const it of review){
     const isIntent = it.item_type === "intent";
     const isDecision = it.item_type === "decision_episode";
     const intentBtns = isIntent ? `
       <div class="row" style="margin-top:8px">
-        <span class="muted" style="font-size:12px">Intent 更接近?</span>
+        <span class="muted" style="font-size:12px">${t("intentCloser")}</span>
         ${["ROTATE","SOFT_ROTATE","REPOSITION","GATHER_INFO","HOLD","OTHER","UNSURE"].map(l=>
           `<button class="btn" onclick="annotateType('${it.id}','intent','${l}')">${l}</button>`).join("")}
       </div>` : "";
     const prefBtns = isIntent && it.candidates && it.candidates.length >= 2 ? `
       <div class="row" style="margin-top:6px">
-        <span class="muted" style="font-size:12px">偏好哪个候选?</span>
+        <span class="muted" style="font-size:12px">${t("preferCandidate")}</span>
         <button class="btn" onclick="pref('${it.id}','${it.candidates[0]}')">${it.candidates[0]}</button>
         <button class="btn" onclick="pref('${it.id}','${it.candidates[1]}')">${it.candidates[1]}</button>
       </div>` : "";
     const decisionBtns = isDecision ? `
       <div class="row" style="margin-top:8px">
-        <span class="muted" style="font-size:12px">Decision was…</span>
-        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">Correct</button>
-        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">Wrong</button>
-        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">Unsure</button>
+        <span class="muted" style="font-size:12px">${t("decisionWas")}</span>
+        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">${t("correct")}</button>
+        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">${t("wrong")}</button>
+        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">${t("unsure")}</button>
       </div>
       <div class="row" style="margin-top:6px">
-        <span class="muted" style="font-size:12px">候选比较（当时局面哪个更合理）?</span>
+        <span class="muted" style="font-size:12px">${t("candidateCompare")}</span>
         ${(it.candidates||[]).slice(0,3).map(c=>
           `<button class="btn" onclick="decisionPref('${it.event_id}','${c}')">${c}</button>`).join("")}
       </div>` : "";
@@ -303,24 +511,24 @@ async function renderReview(el){
         <span class="mono muted">r${it.round} t${it.tick}</span>
         <span class="mono muted">${esc(it.match_id.slice(0,8))}…</span>
         <span class="muted">priority ${it.priority}</span></div>
-      <div class="why">System: <b>${esc(it.model_prediction)}</b> · confidence ${it.model_confidence} ·
+      <div class="why">${t("system")}: <b>${esc(it.model_prediction)}</b> · ${t("confidence")} ${it.model_confidence} ·
         ${esc(it.rationale)}</div>
       <div class="row">
-        <span class="muted" style="font-size:12px">Does this look right?</span>
-        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">Correct</button>
-        <button class="btn" onclick="annotate('${it.id}','PARTIALLY_CORRECT','')">Partially</button>
-        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">Incorrect</button>
-        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">Unsure</button>
+        <span class="muted" style="font-size:12px">${t("doesThisLookRight")}</span>
+        <button class="btn" onclick="annotate('${it.id}','CORRECT','')">${t("correct")}</button>
+        <button class="btn" onclick="annotate('${it.id}','PARTIALLY_CORRECT','')">${t("partially")}</button>
+        <button class="btn" onclick="annotate('${it.id}','INCORRECT','')">${t("wrong")}</button>
+        <button class="btn" onclick="annotate('${it.id}','UNSURE','')">${t("unsure")}</button>
         <select id="rc-${it.id}" style="max-width:180px">
           ${["OTHER","TEAM_CALL","MISSING_AUDIO","MISSING_VISUAL_CONTEXT","WRONG_TIMING",
              "WRONG_INFORMATION_ASSUMPTION","EXECUTION_NOT_DECISION"].map(c=>`<option>${c}</option>`).join("")}
         </select>
-        <input id="cm-${it.id}" placeholder="备注（可选）" style="max-width:180px">
+        <input id="cm-${it.id}" placeholder="${t("comment")}" style="max-width:180px">
       </div>${intentBtns}${prefBtns}${decisionBtns}
     </div>`;
   }
   const stats = await api("/api/annotations/stats").catch(()=>({}));
-  if (stats.total) html += `<div class="card"><h3>Annotation Stats</h3><pre>${esc(JSON.stringify(stats,null,1))}</pre></div>`;
+  if (stats.total) html += `<div class="card"><h3>${t("annStats")}</h3><pre>${esc(JSON.stringify(stats,null,1))}</pre></div>`;
   el.innerHTML = html;
 }
 async function annotate(reviewId, label){
@@ -331,7 +539,7 @@ async function annotate(reviewId, label){
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({annotation_type:"behavior_detection", human_label:label,
                             human_confidence:0.8, reason_code:rc, optional_comment:cm})});
-    toast("标注已保存"); goto("review");
+    toast(t("annSaved")); goto("review");
   } catch(e){ toast(e.message); }
 }
 async function annotateType(reviewId, type, label){
@@ -340,7 +548,7 @@ async function annotateType(reviewId, type, label){
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({annotation_type:type, human_label:label,
                             human_confidence:0.7, reason_code:"OTHER"})});
-    toast(type+" 标注已保存"); goto("review");
+    toast(type+" "+t("annSaved")); goto("review");
   } catch(e){ toast(e.message); }
 }
 async function pref(reviewId, choice){
@@ -348,7 +556,7 @@ async function pref(reviewId, choice){
     await api("/api/review/"+reviewId+"/preference", {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({human_choice:choice, human_confidence:0.6, reason_code:"OTHER"})});
-    toast("Preference 已保存"); goto("review");
+    toast(t("prefSaved")); goto("review");
   } catch(e){ toast(e.message); }
 }
 async function decisionPref(episodeId, action){
@@ -357,38 +565,38 @@ async function decisionPref(episodeId, action){
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({candidate_a:action, human_choice:"A",
                             human_confidence:0.6, reason_code:"OTHER"})});
-    toast("Decision 候选偏好已保存"); goto("review");
+    toast(t("decisionPrefSaved")); goto("review");
   } catch(e){ toast(e.message); }
 }
 
-/* ---------------- Decisions (V1.3 DecisionEpisode) ---------------- */
+/* ---------------- Decisions（DecisionEpisode 决策片段） ---------------- */
 async function renderDecisions(el){
   const { decisions } = await api("/api/decisions");
   const { stats } = await api("/api/decision-stats").catch(()=>({stats:{}}));
-  let html = `<h2>DECISIONS <span class="muted">(DecisionEpisode — 局部选择分析)</span></h2>`;
+  let html = `<h2>${t("decisions")} <span class="muted">(DecisionEpisode)</span></h2>`;
   if (stats && stats.total) html += `<div class="card mono muted" style="font-size:11px">
     episodes=${stats.total} · family=${esc(JSON.stringify(stats.family))} ·
     eval=${esc(JSON.stringify(stats.evaluation))} · actionability=${esc(JSON.stringify(stats.actionability))}
   </div>`;
-  if (!decisions.length) html += `<div class="card"><span class="muted">暂无 DecisionEpisode（运行 alpha 管线后生成）</span></div>`;
+  if (!decisions.length) html += `<div class="card"><span class="muted">${t("noDecisions")}</span></div>`;
   for (const d of decisions){
     const m = d.macro_context || {};
     const why = m.need_for_information && m.advantage_state
-      ? `You were <b>${esc(m.advantage_state.replace("_"," "))}</b> · info need <b>${esc(m.need_for_information)}</b> · risk tolerance <b>${esc(m.risk_tolerance||"—")}</b>.`
-      : "context unknown";
+      ? `${t("youWere")} <b>${esc(m.advantage_state.replace("_"," "))}</b> · ${t("infoNeed")} <b>${esc(m.need_for_information)}</b> · ${t("riskTolerance")} <b>${esc(m.risk_tolerance||"—")}</b>.`
+      : t("contextUnknown");
     const em = d.engagement_method || {};
     const wm = d.weapon_matchup || {};
     const me = d.movement_effect || {};
     const prims = (d.execution_primitives||[]).map(esc).join(", ") || "—";
     const cands = (d.candidates||[]).filter(c=>!["UNAVAILABLE","TEMPORARILY_UNAVAILABLE"].includes(c.feasibility));
     const engLine = (d.engagement_evaluation && em.method)
-      ? `<div class="why"><b>HOW YOU FOUGHT</b>: ${esc(em.method)} · engagement <b>${esc(d.engagement_evaluation)}</b>` +
+      ? `<div class="why"><b>${t("howYouFought")}</b>: ${esc(em.method)} · engagement <b>${esc(d.engagement_evaluation)}</b>` +
         (wm.self_weapon_class ? ` · ${esc(wm.self_weapon_class)} vs ${esc(wm.enemy_weapon_class||"unknown")} @ ${esc(wm.range_bucket||"—")}` : "") +
-        (d.information_advantage ? ` · info advantage <b>${esc(d.information_advantage)}</b>` : "") + `</div>` : "";
+        (d.information_advantage ? ` · ${t("infoAdvantage")} <b>${esc(d.information_advantage)}</b>` : "") + `</div>` : "";
     const execLine = (d.execution_evaluation && d.execution_primitives)
-      ? `<div class="why"><b>HOW YOU EXECUTED</b>: <b>${esc(d.execution_evaluation)}</b>` +
-        ` · issues: ${prims}` +
-        (me.self_accuracy_cost ? ` · self-accuracy <b>${esc(me.self_accuracy_cost)}</b> · opponent tracking <b>${esc(me.estimated_opponent_tracking_difficulty||"—")}</b>` : "") + `</div>` : "";
+      ? `<div class="why"><b>${t("howYouExecuted")}</b>: <b>${esc(d.execution_evaluation)}</b>` +
+        ` · ${t("issues")}: ${prims}` +
+        (me.self_accuracy_cost ? ` · ${t("selfAccuracy")} <b>${esc(me.self_accuracy_cost)}</b> · ${t("oppTracking")} <b>${esc(me.estimated_opponent_tracking_difficulty||"—")}</b>` : "") + `</div>` : "";
     html += `<div class="card">
       <div class="row">
         <span class="chip ${d.actionability==="NOT_ACTIONABLE"?"":d.actionability==="HIGHLY_ACTIONABLE"?"ok":"MEDIUM"}">${esc(d.actionability)}</span>
@@ -397,11 +605,11 @@ async function renderDecisions(el){
         <b>${esc((d.family||"").replace("_"," "))}</b>
         <span class="mono muted">r${d.round} t${d.anchor_tick} p${d.player_id}</span>
       </div>
-      <div class="why"><b>OBSERVED</b>: ${esc(d.observed_action)} · commitment ${esc(d.commitment_state)} · intent ${esc(d.intent)} · sufficiency ${esc(d.evidence_sufficiency||"—")}</div>
-      <div class="why"><b>WHY FIGHT</b>: ${why} <span class="muted">(strategic ${esc(d.strategic_evaluation||"—")})</span></div>
+      <div class="why"><b>${t("observed")}</b>: ${esc(d.observed_action)} · ${t("commitment")} ${esc(d.commitment_state)} · ${t("intent")} ${esc(d.intent)} · sufficiency ${esc(d.evidence_sufficiency||"—")}</div>
+      <div class="why"><b>${t("whyFight")}</b>: ${why} <span class="muted">(${t("strategic")} ${esc(d.strategic_evaluation||"—")})</span></div>
       ${engLine}${execLine}
       <div class="row" style="margin-top:6px">
-        <span class="muted" style="font-size:12px">Alternatives:</span>
+        <span class="muted" style="font-size:12px">${t("alternatives")}:</span>
         ${cands.map(c=>`<span class="chip">${esc(c.action)} <span class="muted">${esc(c.feasibility)}</span></span>`).join("")}
       </div>
     </div>`;
@@ -413,14 +621,14 @@ window.addEventListener("hashchange", () => {
   const h = location.hash;
   if (h.startsWith("#/match/")) {
     const matchId = h.slice("#/match/".length);
-    const el = $("#app"); el.innerHTML = `<span class="muted">loading…</span>`;
+    const el = $("#app"); el.innerHTML = `<span class="muted">${t("loading")}</span>`;
     return renderMatch(el, matchId).catch(e => el.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`);
   }
   if (h.startsWith("#/calibration")) return renderCalibration($("#app"));
   goto(h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
 });
 
-/* ---------------- Calibration Review Lab (PART B §9 + D §20-22 + Q session) ---------------- */
+/* ---------------- Calibration Lab（校准实验室） ---------------- */
 let calSession = [];
 let calIdx = 0;
 async function renderCalibration(el){
@@ -429,11 +637,10 @@ async function renderCalibration(el){
   calIdx = 0;
   const stats = data.ground_truth || {detectors:{}};
   const dets = stats.detectors || {};
-  let html = `<h2>CALIBRATION LAB <span class="muted">(Ground Truth 工作流)</span></h2>`;
-  // dual-state display (PART B §9): Pipeline vs Ground Truth never conflated
+  let html = `<h2>${t("calLab")} <span class="muted">(${t("calLabNote")})</span></h2>`;
   html += `<div class="card"><table>
-    <tr><th>Detector</th><th>Human</th><th>Confirmed</th><th>Precision</th>
-        <th>Ground Truth</th><th>Simulated</th><th>Pipeline</th></tr>`;
+    <tr><th>${t("detector")}</th><th>${t("human")}</th><th>${t("confirmed")}</th><th>${t("precision")}</th>
+        <th>${t("groundTruth")}</th><th>${t("simulated")}</th><th>${t("pipeline")}</th></tr>`;
   for (const [det, s] of Object.entries(dets)){
     html += `<tr><td>${esc(det)}</td>
       <td>${s.human_reviewed_count??0}</td><td>${s.human_confirmed_count??0}</td>
@@ -442,14 +649,14 @@ async function renderCalibration(el){
       <td class="muted">${s.simulated_reviewed_count??0}</td>
       <td><span class="chip">${esc(s.pipeline_validation_state||"NOT_TESTED")}</span></td></tr>`;
   }
-  if (!Object.keys(dets).length) html += `<tr><td colspan=7 class="muted">暂无校准样本</td></tr>`;
+  if (!Object.keys(dets).length) html += `<tr><td colspan=7 class="muted">${t("noCalSamplesRow")}</td></tr>`;
   html += `</table><div class="muted mono" style="font-size:10px">${esc(stats.ground_truth_note||"")}</div></div>`;
-  html += `<h3>REVIEW SESSION <span class="muted">(${calSession.length} pending · 快捷键 1=Yes 2=No 3=Unsure S=Skip)</span></h3>`;
-  if (!calSession.length) html += `<div class="card"><span class="muted">全部已 review 或暂无样本</span></div>`;
+  html += `<h3>${t("reviewSession")} <span class="muted">(${calSession.length} ${t("sessionNote")})</span></h3>`;
+  if (!calSession.length) html += `<div class="card"><span class="muted">${t("allReviewed")}</span></div>`;
   else html += `<div id="cal-card"></div><div class="row" style="margin-top:8px">
-    <button class="btn" onclick="calNav(-1)">← Prev</button>
-    <button class="btn" onclick="calNav(1)">Next →</button>
-    <button class="btn" onclick="calSkip()">Skip (S)</button>
+    <button class="btn" onclick="calNav(-1)">${t("prev")}</button>
+    <button class="btn" onclick="calNav(1)">${t("next")}</button>
+    <button class="btn" onclick="calSkip()">${t("skip")}</button>
   </div>`;
   el.innerHTML = html;
   if (calSession.length) renderCalCard();
@@ -460,13 +667,13 @@ async function renderCalCard(){
   const reasons = await api("/api/calibration-review-fp-reasons", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({detector: s.detector_type})}
   ).catch(()=>({reasons:["OTHER","INSUFFICIENT_CONTEXT"]}));
-  const neg = s.is_negative_control ? `<span class="chip">NEGATIVE CONTROL</span>` : "";
+  const neg = s.is_negative_control ? `<span class="chip">${t("negativeControl")}</span>` : "";
   document.getElementById("cal-card").innerHTML = `<div class="card">
     <div class="row"><span class="chip">${esc(s.detector_type)}</span>${neg}
       <span class="mono muted">r${s.round} t${s.tick}</span>
       <span class="muted">conf ${s.predicted_confidence ?? "—"} · evidence ${esc(s.evidence_sufficiency||"—")}</span>
       <span class="muted">${calIdx+1}/${calSession.length}</span></div>
-    <div class="why">System says: <b>${esc(s.predicted_label)}</b> (${esc(s.sample_stratum||"general")})</div>
+    <div class="why">${t("systemSays")}: <b>${esc(s.predicted_label)}</b> (${esc(s.sample_stratum||"general")})</div>
     <div class="row" style="margin-top:8px">
       <button class="btn" onclick="calReview('${s.id}','YES',1)">Yes (1)</button>
       <button class="btn" onclick="calReview('${s.id}','NO',1)">No (2)</button>
@@ -476,7 +683,7 @@ async function renderCalCard(){
       <select id="fpsel-${s.id}" style="max-width:280px">
         ${reasons.reasons.map(r=>`<option>${esc(r)}</option>`).join("")}
       </select>
-      <button class="btn" onclick="calReviewFP('${s.id}')">提交 No + 原因</button>
+      <button class="btn" onclick="calReviewFP('${s.id}')">${t("submitNoReason")}</button>
     </div>
   </div>`;
 }
@@ -487,7 +694,7 @@ async function calReview(sampleId, label, advance){
     await api("/api/calibration/"+sampleId+"/review", {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({human_label:label, human_confidence:0.8})});
-    toast("HUMAN label 已保存（original prediction 保留）");
+    toast(t("humanLabelSaved"));
     if (advance) calNav(1);
   } catch(e){ toast(e.message); }
 }
@@ -497,7 +704,7 @@ async function calReviewFP(sampleId){
     await api("/api/calibration/"+sampleId+"/review", {method:"POST",
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({human_label:reason, human_confidence:0.8})});
-    toast("HUMAN label + 原因已保存"); calNav(1);
+    toast(t("humanLabelReasonSaved")); calNav(1);
   } catch(e){ toast(e.message); }
 }
 document.addEventListener("keydown", e => {
@@ -507,6 +714,9 @@ document.addEventListener("keydown", e => {
   if (e.key === "3") { const s = calSession[calIdx]; if (s) calReview(s.id, "UNSURE", 1); }
   if (e.key.toLowerCase() === "s") calSkip();
 });
+
+/* ================= 启动 ================= */
+applyLang();
 goto("focus");
 </script>
 </body>
