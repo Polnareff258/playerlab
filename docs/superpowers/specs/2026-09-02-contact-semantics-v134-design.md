@@ -71,6 +71,13 @@ expansion is `MICROADJUST_HOLD`; static and actively maintained lanes are
 
 `PEEK` requires temporally close self movement, a self-caused exposure gain, and
 `SELF_INITIATED` (or explicitly weak, downgraded self-initiation evidence).
+An encounter is deliberately distinct from an active peek: simultaneous corner
+turns, sudden shared visibility, and no-pre-existing-holder situations are
+recorded as an `ENCOUNTER` contact profile with `MUTUAL`, `STATIC_CONTACT`, or
+`UNKNOWN` initiation.  They do not become PEEK merely because the player moved
+before contact.  Only a one-sided, self-created covered-to-engageable transition
+may receive the active PEEK action label; ambiguous encounter actions remain
+probabilistic and are prioritized for review.
 `RE_PEEK` requires exposed -> covered/disengaged -> self-initiated exposed plus
 lane, position, and enemy-context similarity.  `DRY_PEEK` is an EngagementMethod
 only after a real peek.  `LET_CROSS` uses enemy entry, self stability, and a
