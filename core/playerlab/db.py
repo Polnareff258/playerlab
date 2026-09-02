@@ -282,6 +282,24 @@ CREATE TABLE IF NOT EXISTS experiment_runs (
 CREATE INDEX IF NOT EXISTS idx_ca_sample ON calibration_annotations (sample_id);
 """
 
+# V1.3.4: contact semantics are separate from detector calibration.  These
+# samples are pending human review by default and never write ground truth.
+V134_SCHEMA = """
+CREATE TABLE IF NOT EXISTS contact_action_samples (
+    id TEXT PRIMARY KEY, match_id TEXT, player_id INTEGER, enemy_id INTEGER,
+    round INTEGER, tick INTEGER, contact_window TEXT, prediction TEXT,
+    geometry_prediction TEXT, csnet_evidence TEXT, motion_sequence TEXT,
+    exposure_sequence TEXT, visibility_sequence TEXT, context TEXT,
+    label_source TEXT DEFAULT 'PENDING_HUMAN_REVIEW', review_status TEXT DEFAULT 'pending',
+    human_label TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS contact_action_annotations (
+    annotation_id TEXT PRIMARY KEY, sample_id TEXT, annotator_id TEXT,
+    label TEXT, confidence REAL, reason TEXT, created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_contact_action_queue ON contact_action_samples (review_status, match_id, round, tick);
+"""
+
 _ADD_COLUMNS_V8 = [
     ("calibration_samples", "label_source", "TEXT"),       # HUMAN/SIMULATED/...
     ("calibration_samples", "pipeline_validation", "TEXT"),  # NOT_TESTED/PIPELINE_VALIDATED/PIPELINE_FAILED
@@ -424,9 +442,37 @@ class DB:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         if current < 10:
             self.conn.execute("UPDATE schema_version SET version=10")
+        if current < 11:
+            self.conn.executescript(V134_SCHEMA)
+            self.conn.execute("UPDATE schema_version SET version=11")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
+
+    # ---- V1.3.4 contact action samples ----
+    def upsert_contact_action_sample(self, s: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO contact_action_samples
+               (id, match_id, player_id, enemy_id, round, tick, contact_window,
+                prediction, geometry_prediction, csnet_evidence, motion_sequence,
+                exposure_sequence, visibility_sequence, context, label_source,
+                review_status, human_label, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (s["id"], s.get("match_id"), s.get("player_id"), s.get("enemy_id"),
+             s.get("round"), s.get("tick"), jd(s.get("contact_window", {})),
+             jd(s.get("prediction", {})), jd(s.get("geometry_prediction", {})),
+             jd(s.get("csnet_evidence", {})), jd(s.get("motion_sequence", [])),
+             jd(s.get("exposure_sequence", [])), jd(s.get("visibility_sequence", [])),
+             jd(s.get("context", {})), s.get("label_source", "PENDING_HUMAN_REVIEW"),
+             s.get("review_status", "pending"), s.get("human_label"),
+             s.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))))
+        self.conn.commit()
+
+    def get_contact_action_samples(self, review_status="pending", limit=1000):
+        rows = self.conn.execute(
+            "SELECT * FROM contact_action_samples WHERE review_status=? AND round >= 1 ORDER BY round, tick LIMIT ?",
+            (review_status, limit))
+        return [dict(r) for r in rows]
 
     def close(self):
         self.conn.close()

@@ -105,3 +105,13 @@ def test_decision_contact_meta_preserves_probability_and_initiator():
     meta = contact_meta(p)
     assert meta["initiation"] == "ENEMY_INITIATED"
     assert meta["prediction"]["probabilities"]["HOLD"] == .8
+
+
+def test_contact_action_samples_stay_pending_until_human_annotation():
+    from playerlab.db import DB
+    db = DB(":memory:")
+    db.upsert_contact_action_sample({"id": "contact-1", "match_id": "m", "player_id": 1,
+                                     "enemy_id": 2, "round": 1, "tick": 10,
+                                     "prediction": {"top_label": "HOLD"}})
+    sample = db.get_contact_action_samples()[0]
+    assert sample["label_source"] == "PENDING_HUMAN_REVIEW"
