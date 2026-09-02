@@ -808,10 +808,20 @@ async function contactResume(sessionId){
   await contactLoadCurrent();
   renderContactReview($("#app"));
 }
-async function contactLoadCurrent(){
-  const r = await api("/api/contact-review/session/"+contactSession.session_id+"/current").catch(()=>({sample:null}));
+async function contactLoadCurrent(index){
+  const url = "/api/contact-review/session/"+contactSession.session_id+"/current"
+    + (index!==undefined ? "?index="+index : "");
+  const r = await api(url).catch(()=>({sample:null}));
   contactCur = r.sample;
   contactSession.index = r.index; contactSession.total = r.total;
+  contactSession.round_map = r.round_map || {};
+  // unique rounds in order for the round selector (PART U)
+  const seen = new Set(); const rounds = [];
+  for (const sid of (r.sample_ids||[])) {
+    const rn = (r.round_map||{})[sid];
+    if (rn !== undefined && !seen.has(rn)) { seen.add(rn); rounds.push(rn); }
+  }
+  contactSession.roundsCache = rounds;
   contactBlind = {};
   if (contactCur) { contactCur.player_info = r.sample.player_info; }
 }
@@ -930,18 +940,21 @@ async function contactNav(delta){
   const cur = ids.indexOf(contactCur ? contactCur.id : "");
   const target = Math.max(0, Math.min(ids.length-1, cur+delta));
   contactSession.current_index = target;
-  await contactLoadCurrent();
+  await contactLoadCurrent(target);
   renderContactReview($("#app"));
 }
 async function contactJumpRound(rnum){
   const ids = contactSession.sample_ids || [];
-  // find first sample with this round (samples sorted by round,tick)
+  const rmap = contactSession.round_map || {};
   for (let i=0;i<ids.length;i++){
-    const sid = ids[i];
-    const row = await api("/api/contact-review/session/"+contactSession.session_id+"/current").catch(()=>({sample:null}));
-    break;
+    if (rmap[ids[i]] === rnum) {
+      contactSession.current_index = i;
+      await contactLoadCurrent(i);
+      renderContactReview($("#app"));
+      return;
+    }
   }
-  toast("jump: sample list is frozen per round order; use Prev/Next");
+  toast("no sample in round " + rnum);
 }
 function contactBlindPick(q,v){ contactBlind[q]=v; rerenderBlindCard(); }
 async function contactSkipCur(){

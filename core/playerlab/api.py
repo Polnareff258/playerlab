@@ -448,7 +448,23 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                 s["match_info"] = mi
                         _json(self, {"conflicts": cs})
                     elif sub == "current":
-                        s = current_sample(db, sess)
+                        ids = sess.get("sample_ids") or []
+                        # jump: ?index=N returns the exact sample at that
+                        # position regardless of review state (PART U)
+                        q_idx = q.get("index", [None])[0]
+                        target_sample = None
+                        if q_idx is not None:
+                            try:
+                                i = int(q_idx)
+                                if 0 <= i < len(ids):
+                                    sid = ids[i]
+                                    target_sample = next(
+                                        (one for one in db.get_contact_action_samples(
+                                            review_status=None, limit=100000)
+                                         if one["id"] == sid), None)
+                            except (TypeError, ValueError):
+                                pass
+                        s = target_sample if target_sample is not None else current_sample(db, sess)
                         if s:
                             s["player_info"] = _player_info(db, s.get("match_id"),
                                                             s.get("player_id"))
@@ -460,11 +476,21 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                                 tr = (mi or {}).get("tickrate") or 64
                                 s["in_round_seconds"] = round(
                                     (int(s["tick"]) - int(st)) / tr, 2)
+                        # round map for the jump-to-round selector (PART U):
+                        # sample_id -> round, computed once from the DB
+                        rmap = {}
+                        for one in db.get_contact_action_samples(review_status=None,
+                                                                 limit=100000):
+                            if one["id"] in ids:
+                                rmap[one["id"]] = one.get("round")
+                        shown_index = (int(q_idx) if q_idx is not None and
+                                       str(q_idx).isdigit() else sess.get("current_index", 0))
                         _json(self, {"sample": s,
-                                     "index": sess.get("current_index", 0),
-                                     "total": len(sess.get("sample_ids") or []),
+                                     "index": shown_index,
+                                     "total": len(ids),
                                      "status": sess.get("status"),
-                                     "sample_ids": sess.get("sample_ids")})
+                                     "sample_ids": ids,
+                                     "round_map": rmap})
                     else:
                         _json(self, {"session": sess})
                 elif path == "/api/contact-review-stats":

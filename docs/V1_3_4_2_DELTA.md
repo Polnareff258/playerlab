@@ -106,5 +106,13 @@
 - 浏览器实测：Demo 列表 → Review Recommended → Blind Review（1/6，
   系统答案隐藏）→ 三问题提交 → Reveal（YOUR LABEL vs PLAYERLAB +
   DISAGREEMENT）→ 下一片段推进（r2→r3 时间序）。
+- 跳转验证：Round 选择器（R2 R3 R13 R15 R18）点击 R15 → 从 2/6 跳到
+  4/6（round 15 tick 96077），`?index=N` + round_map 生效。
 - Steam_id 全程字符串传递（修复 parseInt >2^53 截断：76561198359094561
   被截成 ...560 的 bug）。
+- 真实 Demo 复跑（g161 de_dust2 735b demo，alpha 全量 ~49min）：因果门控
+  生效——61 个新持久化样本中 **0 个自动 MUTUAL**（56 UNKNOWN / 3
+  STATIC_CONTACT / 1 ENEMY / 1 SELF），对照 V1.3.4.1 无几何证据时 MUTUAL
+  40-55% 的过判；59/62 行诚实标记 motion.causal=False（无真实 visibility）。
+  HUMAN 标注行（1 条，原判 MUTUAL vs 真人 ENEMY_INITIATED）在复跑中按
+  设计保留，不被覆盖。
