@@ -107,6 +107,16 @@ def test_decision_contact_meta_preserves_probability_and_initiator():
     assert meta["prediction"]["probabilities"]["HOLD"] == .8
 
 
+def test_contact_prediction_replaces_legacy_action_only_when_available():
+    from playerlab.decision import apply_contact_prediction
+    dp = {"observed_action": "PEEK", "meta": {}}
+    p = ActionPrediction("HOLD", {"HOLD": .8, "PEEK": .1, "UNKNOWN": .1},
+                         .8, False, "ENEMY_INITIATED", {}, "STATIC_HOLD")
+    out = apply_contact_prediction(dp, p)
+    assert out["observed_action"] == "HOLD"
+    assert out["meta"]["contact"]["initiation"] == "ENEMY_INITIATED"
+
+
 def test_contact_action_samples_stay_pending_until_human_annotation():
     from playerlab.db import DB
     db = DB(":memory:")
