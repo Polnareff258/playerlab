@@ -32,3 +32,4 @@ spike/node_modules/
 .idea/
 .vscode/
 *.log
+.worktrees/
