@@ -103,6 +103,18 @@ def main(argv=None):
     p_ab = sub.add_parser("geometry-ab", help="geometry ON/OFF A/B experiment on a demo")
     p_ab.add_argument("demo")
     p_ab.add_argument("--out", default="", help="write full diff JSON")
+    # V1.3.4.1 contact reports
+    p_cr = sub.add_parser("contact-regression", help="compare human-confirmed "
+                          "contact samples against the classifier")
+    p_cr.add_argument("--samples", default="", help="JSON/CSV of expected rows "
+                      "(sample_id|match_id|tick + initiation/action)")
+    p_cr.add_argument("--out", default="", help="write report JSON")
+    p_cs = sub.add_parser("contact-sanity", help="sanity metrics over persisted "
+                          "contact predictions (MUTUAL/UNKNOWN/PEEK rates)")
+    p_cs.add_argument("--out", default="", help="write report JSON")
+    p_cb = sub.add_parser("contact-benchmark", help="performance metrics over "
+                          "persisted contact predictions")
+    p_cb.add_argument("--out", default="", help="write report JSON")
     p_batch = sub.add_parser("batch", help="batch-analyze demo files/directories")
     p_batch.add_argument("paths", nargs="+", help=".dem files or directories")
     p_batch.add_argument("--no-recursive", action="store_true", help="do not recurse into subdirs")
@@ -428,6 +440,72 @@ def main(argv=None):
             with open(args.out, "w", encoding="utf-8") as fh:
                 json.dump(res, fh, ensure_ascii=False, indent=1, default=str)
             print(f"full diff written: {args.out}")
+    elif args.cmd == "contact-regression":
+        from .db import DB
+        from .contact_report import run_contact_regression
+        db = DB(cfg.db_path)
+        expected = []
+        if args.samples:
+            with open(args.samples, "r", encoding="utf-8") as fh:
+                text = fh.read()
+            if args.samples.endswith(".json"):
+                data = json.loads(text)
+                expected = data if isinstance(data, list) else data.get("samples", [])
+            else:  # CSV: sample_id,initiation,action,label_source
+                import csv as _csv
+                import io as _io
+                expected = list(_csv.DictReader(_io.StringIO(text)))
+        res = run_contact_regression(db, cfg, expected)
+        print(json.dumps({k: v for k, v in res.items() if k != "rows"},
+                         ensure_ascii=False, indent=1, default=str))
+        if res["rows"]:
+            print("--- rows ---")
+            for r in res["rows"]:
+                print(f"  {r.get('sample_id','?'):24s} exp={r.get('expected_initiation')}"
+                      f"/{r.get('expected_action')} pred={r.get('predicted_initiation')}"
+                      f"/{r.get('predicted_action')} pass={r.get('initiation_pass')}")
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(res, fh, ensure_ascii=False, indent=1, default=str)
+            print(f"written: {args.out}")
+    elif args.cmd == "contact-sanity":
+        from .db import DB
+        from .contact_report import sanity_checks, initiation_distribution
+        db = DB(cfg.db_path)
+        samples = db.get_contact_action_samples(review_status="pending", limit=100000)
+        preds = [(s.get("prediction") or {}) for s in samples]
+        preds = [p for p in preds if p]
+        dist = initiation_distribution(preds)
+        warnings = sanity_checks(preds, cfg)
+        report = {"n_samples": len(samples), "distribution": dist,
+                  "warnings": warnings}
+        print(json.dumps(report, ensure_ascii=False, indent=1, default=str))
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(report, fh, ensure_ascii=False, indent=1, default=str)
+            print(f"written: {args.out}")
+    elif args.cmd == "contact-benchmark":
+        from .db import DB
+        from .contact_report import contact_benchmark
+        db = DB(cfg.db_path)
+        samples = db.get_contact_action_samples(review_status="pending", limit=100000)
+        # geometry/cache counters are recorded per-sample in context if present
+        geo_q = sum(int((s.get("context") or {}).get("geometry_queries", 0))
+                    for s in samples)
+        cache_hits = sum(int((s.get("context") or {}).get("cache_hits", 0))
+                         for s in samples)
+        # total processing time is not persisted per sample; report what we
+        # can honestly compute (counts + hit rate) and mark elapsed unknown
+        res = contact_benchmark([(s.get("prediction") or {}) for s in samples
+                                 if s.get("prediction")],
+                                geo_q, cache_hits, 0.0)
+        res["note"] = ("total-time not persisted; run timing at the caller. "
+                       "Counts and cache-hit rate are reported here.")
+        print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(res, fh, ensure_ascii=False, indent=1, default=str)
+            print(f"written: {args.out}")
     elif args.cmd == "annotations":
         from .db import DB
         from .annotation import annotation_stats, export_annotations

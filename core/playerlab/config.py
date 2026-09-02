@@ -37,6 +37,22 @@ class Config:
     csnet_contact_sample_ticks: int = 8
     csnet_contact_query_budget: int = 16
 
+    # --- V1.3.4.1 contact initiation v2 (motion-based) ---
+    initiation_motion_window_ticks: int = 32   # 300-800 ms pre-contact motion window
+    initiation_min_speed: float = 80.0         # meaningful motion (u/s)
+    initiation_min_displacement: float = 24.0  # meaningful displacement (u)
+    initiation_outward_bonus: float = 0.25     # motion toward exposure boundary bonus
+    initiation_stability_ratio: float = 1.8    # faster side / slower side threshold
+    mutual_motion_ratio: float = 0.5           # both move >= this * max -> MUTUAL
+    static_motion_max: float = 40.0            # both below this -> STATIC_CONTACT
+    hold_yaw_variance_weight: float = 0.45     # yaw stability share in HOLD score
+    re_peek_same_angle_deg: float = 30.0       # same-angle re-peek similarity
+    contact_timeline_lead_ticks: int = 96      # pre-contact lookback for visibility scan
+    # --- V1.3.4.1 sanity thresholds (PART S) ---
+    mutual_rate_warning: float = 0.25          # MUTUAL above this -> classifier suspect
+    unknown_rate_warning: float = 0.6          # high UNKNOWN due to missing geometry (INFO)
+    peek_inflation_warning: float = 0.5        # PEEK share above this -> warn only
+
     # --- PlayerKnownState ---
     vision_fov_deg: float = 90.0      # CS2 horizontal FOV (approx)
     vision_max_dist: float = 4000.0   # units (~100 m); approx, no occlusion in V1

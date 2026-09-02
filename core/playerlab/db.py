@@ -472,7 +472,20 @@ class DB:
         rows = self.conn.execute(
             "SELECT * FROM contact_action_samples WHERE review_status=? AND round >= 1 ORDER BY round, tick LIMIT ?",
             (review_status, limit))
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            for k in ("contact_window", "prediction", "geometry_prediction",
+                      "csnet_evidence", "motion_sequence", "exposure_sequence",
+                      "visibility_sequence", "context"):
+                v = d.get(k)
+                if isinstance(v, str):
+                    try:
+                        d[k] = json.loads(v)
+                    except Exception:  # noqa: BLE001
+                        d[k] = {}
+            out.append(d)
+        return out
 
     def close(self):
         self.conn.close()

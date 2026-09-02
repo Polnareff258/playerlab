@@ -71,6 +71,7 @@
     <button id="tab-decisions" onclick="goto('decisions')">Decisions</button>
     <button id="tab-matches" onclick="goto('matches')">Matches</button>
     <button id="tab-review" onclick="goto('review')">Review</button>
+    <button id="tab-contact" onclick="goto('contact')">Contact</button>
     <button id="tab-calibration" onclick="goCal()">Calibration</button>
   </nav>
   <button id="lang-btn" onclick="toggleLang()">中 / EN</button>
@@ -86,7 +87,7 @@ const I18N = {
     loading: "加载中…",
     // 导航（专有词保留英文）
     tabFocus: "Focus", tabDecisions: "Decisions", tabMatches: "Matches",
-    tabReview: "Review", tabCalibration: "Calibration",
+    tabReview: "Review", tabContact: "Contact", tabCalibration: "Calibration",
     // Focus 首页
     currentFocus: "当前训练焦点",
     modelIntel: "模型智能",
@@ -173,12 +174,31 @@ const I18N = {
     submitNoReason: "提交 No + 原因",
     humanLabelSaved: "HUMAN 标注已保存（保留原始预测）",
     humanLabelReasonSaved: "HUMAN 标注 + 原因已保存",
+    // Contact Review（接敌复盘）
+    contactReviewTitle: "CONTACT REVIEW（接敌复盘）",
+    contactReviewNote: "每个片段回答 3 个问题后提交；信息不足选 Unsure",
+    noContactSamples: "暂无接敌样本（运行 alpha 管线后生成）",
+    whoInitiated: "Q1 谁主动建立了这次接敌？",
+    initYou: "你主动拉出", initEnemy: "对手主动拉出", initBoth: "双方同时",
+    initStatic: "静态/环境", initNoContact: "没有真接敌", initUnsure: "Unsure",
+    whatDoing: "Q2 你当时在做什么？",
+    actionPeek: "Peek", actionHold: "Hold", actionMicro: "小幅调整架枪",
+    actionRePeek: "Re-peek", actionRepos: "Reposition", actionOther: "Other",
+    whatSupport: "Q3 当时有什么支援？",
+    supSelfUtil: "自身道具", supTeamUtil: "队友道具",
+    supCoord: "队友协同施压", supStealth: "保持隐蔽/Timing",
+    supNone: "无", supUnsure: "Unsure",
+    confirmSubmit: "确认提交（全部回答后移除）",
+    contactSubmitOk: "接敌标注已保存",
+    predInit: "系统判断", predAction: "系统判断动作",
+    whyLabel: "判断依据",
+    contactAdvanced: "Advanced（位移/速度/朝向/LOS）",
   },
   en: {
     headerSub: "Validation Hardening · Human Ground Truth",
     loading: "loading…",
     tabFocus: "Focus", tabDecisions: "Decisions", tabMatches: "Matches",
-    tabReview: "Review", tabCalibration: "Calibration",
+    tabReview: "Review", tabContact: "Contact", tabCalibration: "Calibration",
     currentFocus: "CURRENT FOCUS",
     modelIntel: "MODEL INTELLIGENCE",
     noTarget: "No ACTIVE TrainingTarget yet. Run: python3 -m playerlab.cli alpha <demo.dem>; or INSUFFICIENT_EVIDENCE when history is thin.",
@@ -259,6 +279,24 @@ const I18N = {
     submitNoReason: "Submit No + reason",
     humanLabelSaved: "HUMAN label saved (original prediction kept)",
     humanLabelReasonSaved: "HUMAN label + reason saved",
+    // Contact Review
+    contactReviewTitle: "CONTACT REVIEW",
+    contactReviewNote: "answer 3 questions per clip, then submit; Unsure when unclear",
+    noContactSamples: "No contact samples yet (run the alpha pipeline)",
+    whoInitiated: "Q1 Who initiated this contact?",
+    initYou: "You", initEnemy: "Enemy", initBoth: "Both",
+    initStatic: "Static / environmental", initNoContact: "No real contact", initUnsure: "Unsure",
+    whatDoing: "Q2 What were you doing?",
+    actionPeek: "Peek", actionHold: "Hold", actionMicro: "Micro-adjust hold",
+    actionRePeek: "Re-peek", actionRepos: "Reposition", actionOther: "Other",
+    whatSupport: "Q3 What support existed?",
+    supSelfUtil: "Self utility", supTeamUtil: "Teammate utility",
+    supCoord: "Coordinated pressure", supStealth: "Stealth preserving",
+    supNone: "None", supUnsure: "Unsure",
+    contactSubmitOk: "Contact annotation saved",
+    predInit: "System: initiator", predAction: "System: action",
+    whyLabel: "Why",
+    contactAdvanced: "Advanced (displacement/speed/yaw/LOS)",
   }
 };
 let LANG = localStorage.getItem("playerlab_lang") || "zh";
@@ -275,7 +313,7 @@ function toggleLang(){
   } else if (h.startsWith("#/calibration")) {
     renderCalibration($("#app")).catch(()=>{});
   } else if (h) {
-    const tgt = h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus";
+    const tgt = h.includes("decisions") ? "decisions" : h.includes("contact") ? "contact" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus";
     goto(tgt);
   } else {
     goto("focus");
@@ -287,6 +325,7 @@ function applyLang(){
   document.getElementById("tab-decisions").textContent = t("tabDecisions");
   document.getElementById("tab-matches").textContent = t("tabMatches");
   document.getElementById("tab-review").textContent = t("tabReview");
+  document.getElementById("tab-contact").textContent = t("tabContact");
   document.getElementById("tab-calibration").textContent = t("tabCalibration");
 }
 
@@ -327,7 +366,7 @@ async function api(path, opts) {
   return j;
 }
 function toast(m){ const t2=$("#toast"); t2.textContent=m; t2.style.display="block"; setTimeout(()=>t2.style.display="none",2600); }
-function setTab(t){ ["focus","decisions","matches","review","calibration"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
+function setTab(t){ ["focus","decisions","matches","review","contact","calibration"].forEach(x=>$("#tab-"+x).classList.toggle("on", x===t)); }
 function goCal(){
   setTab("calibration");
   if (location.hash === "#/calibration"){ renderCalibration($("#app")); }
@@ -341,6 +380,7 @@ async function goto(page){
     if (page==="focus") return renderFocus(el);
     if (page==="decisions") return renderDecisions(el);
     if (page==="matches") return renderMatches(el);
+    if (page==="contact") return renderContactReview(el);
     return renderReview(el);
   } catch(e){ el.innerHTML=`<span style="color:var(--bad)">${esc(e.message)}</span>`; }
 }
@@ -661,6 +701,105 @@ async function submitReviewItem(reviewId, isIntent, isDecision){
   } catch(e){ toast(e.message); }
 }
 
+/* ---------------- Contact Review（接敌复盘，V1.3.4.1 PART L） ---------------- */
+let contactAnswers = {};   // { [sampleId]: {initiation, action, support} }
+let contactCache = {};
+async function renderContactReview(el){
+  const g = beginRender();
+  const { samples } = await api("/api/contact-review").catch(()=>({samples:[]}));
+  contactCache = {}; for (const s of samples) contactCache[s.id] = s;
+  let html = `<h2>${t("contactReviewTitle")} <span class="muted">(${t("contactReviewNote")})</span></h2>`;
+  if (!samples.length) html += `<div class="card"><span class="muted">${t("noContactSamples")}</span></div>`;
+  for (const s of samples) html += contactCardHtml(s);
+  commitRender(el, g, html);
+}
+function contactCardHtml(s){
+  const ans = contactAnswers[s.id] || {};
+  const pred = s.prediction || {};
+  const win = s.contact_window || {};
+  const selCls = (q, v) => ans[q] === v ? "on" : "";
+  const qBtn = (q, v, label) => `<button class="btn ${selCls(q,v)}" onclick="contactAns('${s.id}','${q}','${v}')">${label}</button>`;
+  // system prediction line (readable, never raw JSON)
+  const initMap = {SELF_INITIATED:t("initYou"), ENEMY_INITIATED:t("initEnemy"),
+                   MUTUAL:t("initBoth"), STATIC_CONTACT:t("initStatic"),
+                   UNKNOWN:t("initUnsure"), INFORMATION_CONTACT:t("initUnsure")};
+  const actMap = {PEEK:t("actionPeek"), HOLD:t("actionHold"), RE_PEEK:t("actionRePeek"),
+                  REPOSITION:t("actionRepos"), UNKNOWN:t("initUnsure")};
+  const subMap = {MICROADJUST_HOLD:t("actionMicro"), ACTIVE_HOLD:t("actionHold"),
+                  STATIC_HOLD:t("actionHold"), SAME_ANGLE_RE_PEEK:t("actionRePeek")};
+  const amb = pred.ambiguous ? ` <span class="chip MEDIUM">${esc((pred.ambiguous_labels||[]).map(l=>actMap[l]||l).join(" / "))}</span>` : "";
+  const why = esc(pred.why || t("initUnsure"));
+  // advanced panel: motion numbers only when expanded
+  const mot = (pred.evidence||{}).motion || {};
+  const adv = `
+    <details style="margin-top:8px"><summary class="muted" style="cursor:pointer">${t("contactAdvanced")}</summary>
+      <div class="mono muted" style="font-size:11px;margin-top:4px">
+        self: disp ${fmtNum(mot.self_displacement)}u mean ${fmtNum(mot.self_mean_speed)} peak ${fmtNum(mot.self_peak_speed)} yawΔ ${fmtNum(mot.self_yaw_change)}°<br>
+        enemy: disp ${fmtNum(mot.enemy_displacement)}u mean ${fmtNum(mot.enemy_mean_speed)} peak ${fmtNum(mot.enemy_peak_speed)} yawΔ ${fmtNum(mot.enemy_yaw_change)}°<br>
+        visibility_tick: ${win.visibility_tick ?? "—"} (${esc(win.sight_state||"UNKNOWN")}) · possible: ${win.possible_visibility_tick ?? "—"}
+      </div>
+    </details>`;
+  const allAnswered = ans.initiation && ans.action && ans.support;
+  const confirmBtn = `<button class="btn" ${allAnswered?"":"disabled style='opacity:.5'"} onclick="contactSubmit('${s.id}')">${t("confirmSubmit")}</button>`;
+  return `<div class="rev" id="crev-${s.id}">
+    <div class="row"><span class="chip">Contact</span>
+      <span class="mono muted">${matchTag(s.match_info)}</span>
+      <span class="mono muted">${playerTag(s.player_info)} · ${inRound(s.round, s.in_round_seconds, s.tick)}</span></div>
+    <div class="why"><b>${t("predInit")}</b>: <span class="chip">${initMap[pred.initiation]||pred.initiation}</span>
+      <b>${t("predAction")}</b>: <span class="chip">${actMap[pred.top_label]||pred.top_label}${subMap[pred.subtype]? " · "+t(subMap[pred.subtype]) : ""}</span>${amb}</div>
+    <div class="why muted">${t("whyLabel")}: ${why}</div>
+    <div class="row" style="margin-top:8px"><span class="muted" style="font-size:12px">${t("whoInitiated")}</span>
+      ${qBtn("initiation","initYou",t("initYou"))}${qBtn("initiation","initEnemy",t("initEnemy"))}
+      ${qBtn("initiation","initBoth",t("initBoth"))}${qBtn("initiation","initStatic",t("initStatic"))}
+      ${qBtn("initiation","initNoContact",t("initNoContact"))}${qBtn("initiation","initUnsure",t("initUnsure"))}</div>
+    <div class="row" style="margin-top:6px"><span class="muted" style="font-size:12px">${t("whatDoing")}</span>
+      ${qBtn("action","actionPeek",t("actionPeek"))}${qBtn("action","actionHold",t("actionHold"))}
+      ${qBtn("action","actionMicro",t("actionMicro"))}${qBtn("action","actionRePeek",t("actionRePeek"))}
+      ${qBtn("action","actionRepos",t("actionRepos"))}${qBtn("action","actionOther",t("actionOther"))}
+      ${qBtn("action","initUnsure",t("initUnsure"))}</div>
+    <div class="row" style="margin-top:6px"><span class="muted" style="font-size:12px">${t("whatSupport")}</span>
+      ${qBtn("support","supSelfUtil",t("supSelfUtil"))}${qBtn("support","supTeamUtil",t("supTeamUtil"))}
+      ${qBtn("support","supCoord",t("supCoord"))}${qBtn("support","supStealth",t("supStealth"))}
+      ${qBtn("support","supNone",t("supNone"))}${qBtn("support","supUnsure",t("supUnsure"))}</div>
+    <div class="row" style="margin-top:10px">${confirmBtn}</div>
+    ${adv}
+  </div>`;
+}
+function contactAns(sampleId, q, v){ contactAnswers[sampleId] = Object.assign({}, contactAnswers[sampleId]||{}, {[q]: v}); rerenderContactCard(sampleId); }
+function rerenderContactCard(sampleId){
+  // keep all other cards untouched: rebuild only this one from its cached item
+  const cache = contactCache[sampleId];
+  if (!cache) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = contactCardHtml(cache);
+  const el = document.getElementById("crev-"+sampleId);
+  if (el) el.replaceWith(tmp.firstElementChild);
+}
+async function contactSubmit(sampleId){
+  const ans = contactAnswers[sampleId] || {};
+  if (!ans.initiation || !ans.action || !ans.support) return toast(t("initUnsure"));
+  const humanInit = {initYou:"SELF_INITIATED", initEnemy:"ENEMY_INITIATED",
+                     initBoth:"MUTUAL", initStatic:"STATIC_CONTACT",
+                     initNoContact:"NO_CONTACT", initUnsure:"UNSURE"}[ans.initiation];
+  const humanAct = {actionPeek:"PEEK", actionHold:"HOLD", actionMicro:"MICROADJUST_HOLD",
+                    actionRePeek:"RE_PEEK", actionRepos:"REPOSITION",
+                    actionOther:"OTHER", initUnsure:"UNSURE"}[ans.action];
+  const humanSup = {supSelfUtil:"SELF_UTILITY", supTeamUtil:"TEAM_UTILITY_ASSISTED",
+                    supCoord:"COORDINATED_TEAM_PEEK", supStealth:"STEALTH_PRESERVING",
+                    supNone:"UNASSISTED", supUnsure:"UNSURE"}[ans.support];
+  try {
+    await api("/api/contact-review-review", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({sample_id: sampleId, human_initiation: humanInit,
+                            human_action: humanAct, human_support: humanSup,
+                            human_confidence: 0.8})});
+    delete contactAnswers[sampleId]; delete contactCache[sampleId];
+    toast(t("contactSubmitOk"));
+    renderContactReview($("#app"));
+  } catch(e){ toast(e.message); }
+}
+const fmtNum = v => (v===undefined||v===null||isNaN(v)) ? "—" : (Math.round(v*10)/10).toString();
+
 /* ---------------- Decisions（DecisionEpisode 决策片段） ---------------- */
 async function renderDecisions(el){
   const g = beginRender();
@@ -720,7 +859,8 @@ window.addEventListener("hashchange", () => {
     return renderMatch(el, matchId).catch(e => el.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`);
   }
   if (h.startsWith("#/calibration")){ setTab("calibration"); return renderCalibration($("#app")); }
-  goto(h.includes("decisions") ? "decisions" : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
+  goto(h.includes("decisions") ? "decisions" : h.includes("contact") ? "contact"
+       : h.includes("review") ? "review" : h.includes("matches") ? "matches" : "focus");
 });
 
 /* ---------------- Calibration Lab（校准实验室） ---------------- */
@@ -827,6 +967,8 @@ applyLang();
     renderCalibration($("#app"));
   } else if (h.includes("decisions")) {
     goto("decisions");
+  } else if (h.includes("contact")) {
+    goto("contact");
   } else if (h.includes("review")) {
     goto("review");
   } else if (h.includes("matches")) {

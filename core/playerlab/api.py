@@ -364,6 +364,29 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     review = db.get_review_queue(limit=30)
                     _attach_match_info(db, review)
                     _json(self, {"review": review})
+                elif path == "/api/contact-review":
+                    # V1.3.4.1 Contact Review queue (PART L §37): each pending
+                    # contact sample gets the three human questions
+                    samples = db.get_contact_action_samples(review_status="pending",
+                                                            limit=200)
+                    for s in samples:
+                        s["player_info"] = _player_info(db, s.get("match_id"),
+                                                         s.get("player_id"))
+                        mi = _match_info(db, s.get("match_id"))
+                        if mi:
+                            s["match_info"] = mi
+                        # in-round clock for display
+                        st = _round_start_tick(db, s.get("match_id"), s.get("round"))
+                        if st is not None and s.get("tick") is not None:
+                            tr = (mi or {}).get("tickrate") or 64
+                            s["in_round_seconds"] = round(
+                                (int(s["tick"]) - int(st)) / tr, 2)
+                    _json(self, {"samples": samples})
+                elif path == "/api/contact-review-stats":
+                    rows = db.conn.execute(
+                        "SELECT label_source, review_status, COUNT(*) n FROM "
+                        "contact_action_samples GROUP BY label_source, review_status").fetchall()
+                    _json(self, {"stats": [dict(r) for r in rows]})
                 elif path == "/api/annotations/stats":
                     from .annotation import annotation_stats
                     _json(self, annotation_stats(db))
@@ -500,6 +523,29 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     else:
                         ctx = set_focus(db, match_id, steam_id, persist=persist)
                         _json(self, {"focus": ctx.to_dict()})
+                elif path == "/api/contact-review-review":
+                    # V1.3.4.1 Contact Review submission: three human answers
+                    # (initiation / action / support) recorded on one sample.
+                    sid = body.get("sample_id", "")
+                    db.conn.execute(
+                        "UPDATE contact_action_samples SET review_status='reviewed', "
+                        "label_source='HUMAN', human_label=? WHERE id=?",
+                        (json.dumps({"initiation": body.get("human_initiation", ""),
+                                     "action": body.get("human_action", ""),
+                                     "support": body.get("human_support", ""),
+                                     "confidence": body.get("human_confidence", 0.7)}),
+                         sid))
+                    db.conn.execute(
+                        "INSERT OR REPLACE INTO contact_action_annotations "
+                        "(annotation_id, sample_id, annotator_id, label, confidence, reason, created_at) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (__import__("uuid").uuid4().hex[:16], sid, "local",
+                         body.get("human_initiation", ""),
+                         float(body.get("human_confidence", 0.7)),
+                         body.get("reason", ""),
+                         __import__("time").strftime("%Y-%m-%dT%H:%M:%S")))
+                    db.conn.commit()
+                    _json(self, {"saved": True})
                 elif path.startswith("/api/calibration/") and path.endswith("/review"):
                     sample_id = path[len("/api/calibration/"):-len("/review")]
                     from .calibration import submit_human_annotation

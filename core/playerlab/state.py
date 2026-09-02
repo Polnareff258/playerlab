@@ -159,10 +159,12 @@ class PublicInfoBuilder:
 
     def build(self, steamid: int, rnum: int, tick: int, idx: dict,
               teams: dict[int, int]) -> dict:
+        bounds = self.demo.round_bounds(rnum)
+        time_left = round((bounds[1] - tick) / 64.0, 1) if bounds else None
         return {
             "round": rnum,
             "tick": tick,
-            "time_remaining_s": round((self.demo.round_bounds(rnum)[1] - tick) / 64.0, 1),
+            "time_remaining_s": time_left,
             "score_before": self.score_before(rnum),
             "alive_counts": self.alive_counts(tick, idx, teams),
             "bomb": self.bomb_state(tick),

@@ -18,7 +18,9 @@ from .state import (PublicInfoBuilder, KnownStateBuilder, build_ground_truth,
 from .zones import zone_for
 from .weapons import name_from_def
 from .geometry import get_geometry
-from .contact_semantics import build_contact_window, exposure_relations, classify_contact
+from .contact_semantics import (build_contact_window, exposure_relations,
+                                classify_contact, fill_visibility_ticks,
+                                build_fov_lookup)
 
 TAXONOMY = ["PEEK", "HOLD", "RE_PEEK", "DISENGAGE", "FALLBACK"]
 _LOOKBACK = 96  # ticks before first contact to look for approach
@@ -32,7 +34,9 @@ def contact_meta(prediction) -> dict:
                            "probabilities": prediction.probabilities,
                            "confidence": prediction.confidence,
                            "ambiguous": prediction.ambiguous,
+                           "ambiguous_labels": list(prediction.ambiguous_labels),
                            "subtype": prediction.subtype,
+                           "why": getattr(prediction, "why", ""),
                            "evidence": prediction.evidence}}
 
 
@@ -311,11 +315,26 @@ def detect_for_player(demo: IngestedDemo, steamid: int, cfg: Config,
             window = min(windows, key=lambda w: abs((w.first_damage_tick or w.first_shot_tick or w.pre_contact_start) - tc0))
             relations = exposure_relations(window, demo.header.get("map_name", ""), idx, geometry, cfg)
             if relations:
+                # PART C: fill a real visibility_tick from geometry LOS
+                # transitions; with no geometry it stays None and we record a
+                # possible_visibility_tick only as FOV evidence, never as real.
+                quality = getattr(geometry, "quality", "none")
+                fov = None
+                if quality == "none":
+                    try:
+                        from .state import yaw_offset
+                        off = yaw_offset(demo)
+                        fov = build_fov_lookup(window, idx, cfg, off)
+                    except Exception:  # noqa: BLE001
+                        fov = None
+                window = fill_visibility_ticks(window, relations, quality, fov)
                 prediction = classify_contact(window, relations, idx, cfg)
                 dp = apply_contact_prediction(dp, prediction)
                 dp["meta"]["contact"]["window"] = {
                     "pre_contact_start": window.pre_contact_start,
                     "visibility_tick": window.visibility_tick,
+                    "possible_visibility_tick": window.possible_visibility_tick,
+                    "sight_state": window.sight_state,
                     "first_shot_tick": window.first_shot_tick,
                     "first_damage_tick": window.first_damage_tick,
                     "resolution_tick": window.resolution_tick,
@@ -394,6 +413,65 @@ def build_outcome(demo: IngestedDemo, dp: dict, cfg: Config) -> dict:
     }
 
 
+def persist_contact_samples(demo, cfg, db, dps: list[dict], limit: int = 200):
+    """Persist pending ContactActionSample rows from DP contact metadata
+    (PART L §37 / active learning). Samples are pending human review and
+    never write ground truth; include the motion/visibility evidence needed
+    for the Contact Review card."""
+    made = 0
+    for dp in dps:
+        meta = dp.get("meta") or {}
+        contact = meta.get("contact") or {}
+        if not contact.get("prediction"):
+            continue
+        sid = dp["steamid"]
+        rid = dp["round"]
+        tick = dp["decision_tick"]
+        enemy_id = (dp.get("meta") or {}).get("opponent")
+        sample_id = f"{demo.demo_id}-contact-{sid}-{tick}"
+        pred = contact["prediction"]
+        db.upsert_contact_action_sample({
+            "id": sample_id,
+            "match_id": demo.demo_id, "player_id": sid,
+            "enemy_id": enemy_id,
+            "round": rid, "tick": tick,
+            "contact_window": {
+                "pre_contact_start": (contact.get("window") or {}).get("pre_contact_start"),
+                "visibility_tick": (contact.get("window") or {}).get("visibility_tick"),
+                "possible_visibility_tick": (contact.get("window") or {}).get("possible_visibility_tick"),
+                "sight_state": (contact.get("window") or {}).get("sight_state"),
+                "first_shot_tick": (contact.get("window") or {}).get("first_shot_tick"),
+                "first_damage_tick": (contact.get("window") or {}).get("first_damage_tick"),
+                "resolution_tick": (contact.get("window") or {}).get("resolution_tick"),
+                "enemy_id": enemy_id,
+            },
+            "prediction": {
+                "initiation": contact.get("initiation"),
+                "top_label": pred.get("top_label"),
+                "probabilities": pred.get("probabilities"),
+                "confidence": pred.get("confidence"),
+                "ambiguous": pred.get("ambiguous"),
+                "ambiguous_labels": pred.get("ambiguous_labels") or [],
+                "subtype": pred.get("subtype"),
+                "why": pred.get("why", ""),
+                "evidence": pred.get("evidence") or {},
+            },
+            "geometry_prediction": {},
+            "csnet_evidence": {},
+            "motion_sequence": (pred.get("evidence") or {}).get("motion"),
+            "exposure_sequence": [],
+            "visibility_sequence": [],
+            "context": {
+                "map_name": demo.header.get("map_name", ""),
+                "geometry": (contact.get("geometry") or {}),
+            },
+        })
+        made += 1
+        if made >= limit:
+            break
+    return made
+
+
 def analyze_match(demo: IngestedDemo, cfg: Config, db) -> list[dict]:
     """Detect DPs for all players, dedupe by episode, keep top-N, persist."""
     idx = build_tick_index(demo)
@@ -420,5 +498,10 @@ def analyze_match(demo: IngestedDemo, cfg: Config, db) -> list[dict]:
         state = build_state(demo, dp, cfg, idx)
         outcome = build_outcome(demo, dp, cfg)
         db.insert_dp(dp, state, outcome)
+    # V1.3.4.1: persist pending contact samples for the Contact Review queue
+    try:
+        persist_contact_samples(demo, cfg, db, kept)
+    except Exception:  # noqa: BLE001  sampling must not break analysis
+        pass
     db.rebuild_coverage()
     return kept

@@ -238,7 +238,13 @@ def opponent_state(tc: TemporalContext, known: dict) -> dict:
 
 def build_engagement_context(demo, cfg, tc, known, duel=None,
                              observed_action="HOLD") -> dict:
-    """EngagementContext (spec §9): everything about HOW the fight happens."""
+    """EngagementContext (spec §9): everything about HOW the fight happens.
+
+    V1.3.4.1: engagement_method carries ORTHOGONAL dimensions
+    (base_action / movement_style / support_style / utility_type) instead of
+    a single collapsed enum (PART G §20); SupportContext and StealthContext
+    are computed from observable evidence only.
+    """
     op = opponent_state(tc, known)
     matchup = weapon_matchup(tc, known, op)
     info_adv = compute_information_advantage(tc, known)
@@ -246,6 +252,36 @@ def build_engagement_context(demo, cfg, tc, known, duel=None,
     method = detect_engagement_method(demo, cfg, tc, known, observed_action,
                                       duel=duel)
     util = known.get("utility_inventory") or {}
+    # V1.3.4.1 orthogonal support + stealth (PART G/H)
+    try:
+        from .context_semantics import detect_support, detect_stealth
+        support = detect_support(
+            demo, cfg, tc, known, idx=tc.idx,
+            observed_action=observed_action,
+            self_utility_used=bool(method.get("self_utility_used")),
+            self_flash_tick=method.get("self_flash_tick"),
+            team_flash_tick=method.get("team_flash_tick"),
+            flank_state="UNKNOWN")
+        stealth = detect_stealth(demo, cfg, tc, known, idx=tc.idx)
+    except Exception:  # noqa: BLE001  support/stealth are additive
+        support = {"support_style": "UNKNOWN", "utility_type": "NONE",
+                   "confidence": 0.0, "note": ""}
+        stealth = {"flank_state": "UNKNOWN", "reveal_score": None,
+                   "confidence": 0.0, "note": ""}
+    # orthogonal method dims (base_action / movement_style / support_style /
+    # utility_type) — never collapse into one enum
+    mv = (duel or {}).get("movement", {}) or {}
+    max_lat = mv.get("max_lateral_speed", 0.0)
+    method_dims = {
+        "base_action": observed_action,
+        "movement_style": _movement_style(observed_action, max_lat,
+                                          (duel or {}).get("exposure_ticks", 0)),
+        "support_style": support.get("support_style", "UNKNOWN")
+        if isinstance(support, dict) else support.support_style,
+        "utility_type": support.get("utility_type", "NONE")
+        if isinstance(support, dict) else support.utility_type,
+        "exposure_style": method.get("exposure_style", "standard"),
+    }
     return {
         "self_state": {
             "weapon": name_from_def((known.get("own") or {}).get("weapon_def")),
@@ -276,5 +312,23 @@ def build_engagement_context(demo, cfg, tc, known, duel=None,
                      "style": method.get("exposure_style", "standard")},
         "fight_preparation": prep,
         "engagement_method": method,
+        "method_dimensions": method_dims,     # orthogonal (PART G §20)
+        "support_context": support if isinstance(support, dict) else support.summary(),
+        "stealth_context": stealth if isinstance(stealth, dict) else stealth.summary(),
         "confidence": round(0.6, 3),
     }
+
+
+def _movement_style(observed_action: str, max_lat: float, exposure_ticks: int) -> str:
+    """Orthogonal movement dimension for EngagementMethod (PART G §20)."""
+    if observed_action in ("HOLD", "HIDE"):
+        return "STATIC"
+    if observed_action in ("DISENGAGE", "REPOSITION"):
+        return "RUN"
+    if max_lat >= 320.0:
+        return "WIDE_SWING"
+    if exposure_ticks <= 10:
+        return "JIGGLE"
+    if observed_action in ("PEEK", "RE_PEEK"):
+        return "PEEL"
+    return "UNKNOWN"
