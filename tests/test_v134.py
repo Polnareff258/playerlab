@@ -90,3 +90,9 @@ def test_geometry_relations_use_los_not_fov_only():
            (2, 10): {"x": 10, "y": 0, "is_alive": True}}
     rel = exposure_relations(window, "de_test", idx, Geometry(), Config())[0]
     assert rel.self_exposure_state == "COVERED" and rel.geometry_quality == "exact"
+
+
+def test_unavailable_csnet_is_auxiliary_and_returns_none():
+    from playerlab.csnet_assist import CSNetAssistProvider
+    provider = CSNetAssistProvider(Config(csnet_repo_dir="missing"))
+    assert provider.collect("demo", ContactWindow(1, 2, None, None, 3, 1, 2), [2]) is None
