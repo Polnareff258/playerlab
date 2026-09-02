@@ -8,6 +8,7 @@ Action predicates are parameterized via Config; no geometric occlusion in V1
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 
 from .config import Config
 from .features import build_features
@@ -16,10 +17,33 @@ from .state import (PublicInfoBuilder, KnownStateBuilder, build_ground_truth,
                     build_tick_index, pos_at)
 from .zones import zone_for
 from .weapons import name_from_def
+from .geometry import get_geometry
+from .contact_semantics import build_contact_window, exposure_relations, classify_contact
 
 TAXONOMY = ["PEEK", "HOLD", "RE_PEEK", "DISENGAGE", "FALLBACK"]
 _LOOKBACK = 96  # ticks before first contact to look for approach
 _EPISODE_TAIL = 32
+
+
+def contact_meta(prediction) -> dict:
+    """Serialize V1.3.4 contact output without discarding its distribution."""
+    return {"initiation": prediction.initiation,
+            "prediction": {"top_label": prediction.top_label,
+                           "probabilities": prediction.probabilities,
+                           "confidence": prediction.confidence,
+                           "ambiguous": prediction.ambiguous,
+                           "subtype": prediction.subtype,
+                           "evidence": prediction.evidence}}
+
+
+def apply_contact_prediction(dp: dict, prediction) -> dict:
+    """Make contact semantics the action source while preserving legacy fields."""
+    dp = dict(dp)
+    dp["observed_action"] = prediction.top_label
+    meta = dict(dp.get("meta") or {})
+    meta["contact"] = contact_meta(prediction)
+    dp["meta"] = meta
+    return dp
 
 
 def _dot_dir(px, py, vx, vy, ax, ay) -> float:
@@ -39,6 +63,8 @@ def detect_for_player(demo: IngestedDemo, steamid: int, cfg: Config,
     if not recs:
         return []
     ticks_sorted = sorted(recs)
+    geometry = get_geometry(cfg.geometry_provider, nav_dir=cfg.geometry_nav_dir or None,
+                            tri_dir=cfg.geometry_tri_dir or None)
 
     # damage contacts involving this player
     contacts = []
@@ -261,7 +287,7 @@ def detect_for_player(demo: IngestedDemo, steamid: int, cfg: Config,
                                         "victim": k["user_name"], "attacker": k["attacker_name"],
                                         "weapon": k.get("weapon"), "distance": k.get("distance")})
 
-        dps.append({
+        dp = {
             "dp_id": f"{demo.demo_id}-r{rnum}-{steamid}-{decision_tick}",
             "match_id": demo.demo_id, "round": rnum, "steamid": steamid,
             "player_name": name, "start_tick": start_tick,
@@ -276,7 +302,26 @@ def detect_for_player(demo: IngestedDemo, steamid: int, cfg: Config,
                      "opponent": opponent, "side": side,
                      "anchor": list(anchor), "t_app": t_app, "t_retreat": t_retreat,
                      "hold_run": hold_run, "died_in_episode": died_in_ep},
-        })
+        }
+        # V1.3.4: the old approach heuristic only creates a candidate.  The
+        # exposure pipeline owns the action label and remains honestly UNKNOWN
+        # when geometry cannot establish LOS.
+        windows = build_contact_window(demo, steamid, opponent, idx, cfg)
+        if windows:
+            window = min(windows, key=lambda w: abs((w.first_damage_tick or w.first_shot_tick or w.pre_contact_start) - tc0))
+            relations = exposure_relations(window, demo.header.get("map_name", ""), idx, geometry, cfg)
+            if relations:
+                prediction = classify_contact(window, relations, idx, cfg)
+                dp = apply_contact_prediction(dp, prediction)
+                dp["meta"]["contact"]["window"] = {
+                    "pre_contact_start": window.pre_contact_start,
+                    "visibility_tick": window.visibility_tick,
+                    "first_shot_tick": window.first_shot_tick,
+                    "first_damage_tick": window.first_damage_tick,
+                    "resolution_tick": window.resolution_tick,
+                }
+                dp["meta"]["contact"]["geometry"] = geometry.get_metadata()
+        dps.append(dp)
     return dps
 
 

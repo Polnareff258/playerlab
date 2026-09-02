@@ -28,6 +28,14 @@ class Config:
     max_dp_per_match: int = 60
     outcome_window_ticks: int = 640   # survival@W (10 s at 64 tick)
     contact_radius: float = 2000.0    # damage-actor proximity radius (units)
+    # --- V1.3.4 contact semantics ---
+    hold_stability_ticks: int = 48    # 750 ms at 64 tick
+    hold_max_displacement: float = 48.0
+    hold_max_yaw_variance: float = 18.0
+    exposure_transition_window_ticks: int = 96
+    action_ambiguity_margin: float = 0.12
+    csnet_contact_sample_ticks: int = 8
+    csnet_contact_query_budget: int = 16
 
     # --- PlayerKnownState ---
     vision_fov_deg: float = 90.0      # CS2 horizontal FOV (approx)
