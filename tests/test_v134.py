@@ -125,3 +125,14 @@ def test_contact_action_samples_stay_pending_until_human_annotation():
                                      "prediction": {"top_label": "HOLD"}})
     sample = db.get_contact_action_samples()[0]
     assert sample["label_source"] == "PENDING_HUMAN_REVIEW"
+
+
+def test_classifier_scans_only_the_contact_window_not_all_demo_ticks():
+    class GuardedIndex(dict):
+        def __iter__(self):
+            raise AssertionError("contact classification must not iterate the full demo index")
+    cfg = Config(hold_stability_ticks=2)
+    window = ContactWindow(10, 11, None, None, 12, 1, 2)
+    relations = [_relation(10, "EXPOSED", "COVERED"), _relation(11, "EXPOSED", "EXPOSED")]
+    idx = GuardedIndex(_records([(10, 0, 0, 0), (11, 0, 0, 0), (12, 0, 0, 0)]))
+    assert classify_contact(window, relations, idx, cfg).top_label == "HOLD"

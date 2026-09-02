@@ -135,9 +135,11 @@ def sight_state(self_record: dict, enemy_record: dict, geometry_result: bool | N
 
 
 def _records_for(window: ContactWindow, idx: dict) -> list[tuple[int, dict]]:
-    return [(t, idx[(window.self_id, t)]) for (sid, t) in sorted(idx)
-            if sid == window.self_id and window.pre_contact_start <= t <= (window.resolution_tick or t)
-            and (window.self_id, t) in idx]
+    # Do not scan the complete `(player, tick)` index for every candidate: a
+    # real demo has millions of entries while a ContactWindow has ~100 ticks.
+    end = window.resolution_tick if window.resolution_tick is not None else window.pre_contact_start
+    return [(tick, rec) for tick in range(window.pre_contact_start, end + 1)
+            if (rec := idx.get((window.self_id, tick))) is not None]
 
 
 def _transition(relations: list[ExposureRelation], field: str) -> int | None:
