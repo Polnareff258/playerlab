@@ -469,9 +469,15 @@ class DB:
         self.conn.commit()
 
     def get_contact_action_samples(self, review_status="pending", limit=1000):
-        rows = self.conn.execute(
-            "SELECT * FROM contact_action_samples WHERE review_status=? AND round >= 1 ORDER BY round, tick LIMIT ?",
-            (review_status, limit))
+        if review_status is None:
+            rows = self.conn.execute(
+                "SELECT * FROM contact_action_samples ORDER BY round, tick LIMIT ?",
+                (limit,))
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM contact_action_samples WHERE review_status=? "
+                "AND round >= 1 ORDER BY round, tick LIMIT ?",
+                (review_status, limit))
         out = []
         for r in rows:
             d = dict(r)

@@ -417,7 +417,11 @@ def persist_contact_samples(demo, cfg, db, dps: list[dict], limit: int = 200):
     """Persist pending ContactActionSample rows from DP contact metadata
     (PART L §37 / active learning). Samples are pending human review and
     never write ground truth; include the motion/visibility evidence needed
-    for the Contact Review card."""
+    for the Contact Review card.
+
+    Already-reviewed samples (HUMAN labels) are preserved: a re-run must not
+    overwrite the user's annotations (INSERT OR REPLACE would reset them).
+    """
     made = 0
     for dp in dps:
         meta = dp.get("meta") or {}
@@ -430,6 +434,12 @@ def persist_contact_samples(demo, cfg, db, dps: list[dict], limit: int = 200):
         enemy_id = (dp.get("meta") or {}).get("opponent")
         sample_id = f"{demo.demo_id}-contact-{sid}-{tick}"
         pred = contact["prediction"]
+        # skip samples already reviewed by a human (do not overwrite labels)
+        existing = db.conn.execute(
+            "SELECT review_status, label_source FROM contact_action_samples "
+            "WHERE id=?", (sample_id,)).fetchone()
+        if existing and existing["label_source"] == "HUMAN":
+            continue
         db.upsert_contact_action_sample({
             "id": sample_id,
             "match_id": demo.demo_id, "player_id": sid,

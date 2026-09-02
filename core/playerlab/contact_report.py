@@ -25,8 +25,9 @@ HUMAN_LABEL_SOURCES = ("HUMAN", "IMPORTED_EXPERT", "CONSENSUS")
 def run_contact_regression(db, cfg, expected_rows: list[dict]) -> dict:
     """expected_rows: [{"sample_id"|"match_id"|"tick", "initiation": str,
     "action": str, "label_source": str}...]. Compares classifier predictions
-    persisted on those samples (contact_action_samples table)."""
-    samples = {s["id"]: s for s in db.get_contact_action_samples(limit=100000)}
+    persisted on those samples (contact_action_samples table, any status)."""
+    samples = {s["id"]: s for s in db.get_contact_action_samples(
+        review_status=None, limit=100000)}
     rows = []
     for exp in expected_rows:
         sid = exp.get("sample_id")

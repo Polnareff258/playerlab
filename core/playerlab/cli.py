@@ -446,7 +446,7 @@ def main(argv=None):
         db = DB(cfg.db_path)
         expected = []
         if args.samples:
-            with open(args.samples, "r", encoding="utf-8") as fh:
+            with open(args.samples, "r", encoding="utf-8-sig") as fh:
                 text = fh.read()
             if args.samples.endswith(".json"):
                 data = json.loads(text)

@@ -472,3 +472,32 @@ def test_circular_yaw_hold_evidence_uses_circular_variance():
                         [(t, 100, 0, 180.0) for t in range(10, 17)])
     hold = _hold_evidence_v2(window, relations, idx, cfg)
     assert hold.yaw_variance < 5.0, f"circular yaw variance too high: {hold.yaw_variance}"
+
+
+# --- PART Y: UNKNOWN must block peek-specific evaluation ---------------------
+def test_unknown_observed_action_does_not_produce_peek_method():
+    """PART Y / §33: observed_action UNKNOWN must not flow into PEEK-specific
+    engagement methods (DRY_PEEK / FLASH_PEEK / WIDE_SWING)."""
+    from playerlab.engagement import detect_engagement_method
+    demo = _MiniDemo()
+    tc = _MiniCtx()
+    known = {"utility_inventory": {}}
+    m = detect_engagement_method(demo, _cfg(), tc, known, "UNKNOWN", duel=None)
+    assert m["base_action"] != "PEEK"
+    assert m["method"] not in ("DRY_PEEK", "FLASH_PEEK", "TEAM_FLASH_PEEK",
+                               "WIDE_SWING", "JIGGLE")
+
+
+# --- PART K: CS-NET cannot alter the action label ----------------------------
+def test_csnet_assist_has_no_action_mutation_surface():
+    """PART K §34-§35: CSNetAssistProvider only returns evidence dicts; there
+    is no method that accepts or returns an action label."""
+    import inspect
+    from playerlab.csnet_assist import CSNetAssistProvider
+    sigs = {name: inspect.signature(getattr(CSNetAssistProvider, name))
+            for name in dir(CSNetAssistProvider)
+            if not name.startswith("_") and callable(getattr(CSNetAssistProvider, name))}
+    assert "collect" in sigs and "cache_stats" in sigs
+    # collect returns only model evidence keys — no 'action'/'label' outputs
+    p = CSNetAssistProvider(_cfg(csnet_repo_dir="missing"))
+    assert p.collect("d", ContactWindow(1, 2, None, None, 3, 1, 2), [2]) is None
