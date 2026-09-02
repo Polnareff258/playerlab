@@ -101,6 +101,24 @@ Family）。
 | L 准备 10+ 真人 regression samples | ⏳ PENDING_HUMAN_REGRESSION_REVIEW |
 | visibility_tick 填充 + 全部测试 | ✅ 见 tests/ |
 
+## MUTUAL 率问题（PART R/S 调查）
+
+真实 demo 初跑发现 MUTUAL ≈ 40%（sanity 触发
+`INITIATION_CLASSIFIER_SUSPECT`）。调查后确认根因：
+
+1. **motion window 落在 anchor（shot/damage）上**：窗口覆盖交火中双方都在动的
+   时刻，每次交火都像 MUTUAL。
+2. 修复：motion window 改为 **anchor 之前**的 span（
+   `[pre_contact_start, anchor - initiation_motion_window_ticks]`）—— 测量
+   **导致 LOS transition 的移动**，而非交火中的移动。
+3. initiation 判定用 **sustained motion**（mean speed / displacement），
+   瞬时 speed peak 不再算"推动接敌"。
+
+> 无 geometry 时 LOS 不可用，exposure 全 UNKNOWN —— initiation 只能靠
+> motion。遭遇战双方确实都动时 MUTUAL 是诚实结果；sanity 仍会标记
+> SUSPECT 提醒 review。有 geometry（awpy .tri/.nav）后 exposure 可真实
+> 翻转，initiation 会更准。
+
 ## 验证摘要
 
 - `python3 -m pytest tests/ -q`：141 通过
