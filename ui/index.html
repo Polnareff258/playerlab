@@ -192,6 +192,7 @@ const I18N = {
     contactSubmitOk: "接敌标注已保存",
     predInit: "系统判断", predAction: "系统判断动作",
     whyLabel: "判断依据",
+    confLabel: "置信度",
     contactAdvanced: "Advanced（位移/速度/朝向/LOS）",
   },
   en: {
@@ -296,6 +297,7 @@ const I18N = {
     contactSubmitOk: "Contact annotation saved",
     predInit: "System: initiator", predAction: "System: action",
     whyLabel: "Why",
+    confLabel: "confidence",
     contactAdvanced: "Advanced (displacement/speed/yaw/LOS)",
   }
 };
@@ -719,6 +721,7 @@ function contactCardHtml(s){
   const win = s.contact_window || {};
   const selCls = (q, v) => ans[q] === v ? "on" : "";
   const qBtn = (q, v, label) => `<button class="btn ${selCls(q,v)}" onclick="contactAns('${s.id}','${q}','${v}')">${label}</button>`;
+  const confLevel = v => v==null ? "—" : v>=0.66 ? "High" : v>=0.4 ? "Medium" : "Low";
   // system prediction line (readable, never raw JSON)
   const initMap = {SELF_INITIATED:t("initYou"), ENEMY_INITIATED:t("initEnemy"),
                    MUTUAL:t("initBoth"), STATIC_CONTACT:t("initStatic"),
@@ -729,11 +732,15 @@ function contactCardHtml(s){
                   STATIC_HOLD:t("actionHold"), SAME_ANGLE_RE_PEEK:t("actionRePeek")};
   const amb = pred.ambiguous ? ` <span class="chip MEDIUM">${esc((pred.ambiguous_labels||[]).map(l=>actMap[l]||l).join(" / "))}</span>` : "";
   const why = esc(pred.why || t("initUnsure"));
-  // advanced panel: motion numbers only when expanded
-  const mot = (pred.evidence||{}).motion || {};
+  // advanced panel: motion numbers only when expanded. motion lives in
+  // prediction.evidence.motion (new persist) OR sample.motion_sequence
+  const mot = (pred.evidence||{}).motion || (s.motion_sequence||{}) || {};
+  const probStr = pred.probabilities ? Object.entries(pred.probabilities)
+    .map(([k,v]) => `${k}=${Math.round(v*100)}%`).join(" · ") : "";
   const adv = `
     <details style="margin-top:8px"><summary class="muted" style="cursor:pointer">${t("contactAdvanced")}</summary>
       <div class="mono muted" style="font-size:11px;margin-top:4px">
+        raw: ${esc(probStr)}<br>
         self: disp ${fmtNum(mot.self_displacement)}u mean ${fmtNum(mot.self_mean_speed)} peak ${fmtNum(mot.self_peak_speed)} yawΔ ${fmtNum(mot.self_yaw_change)}°<br>
         enemy: disp ${fmtNum(mot.enemy_displacement)}u mean ${fmtNum(mot.enemy_mean_speed)} peak ${fmtNum(mot.enemy_peak_speed)} yawΔ ${fmtNum(mot.enemy_yaw_change)}°<br>
         visibility_tick: ${win.visibility_tick ?? "—"} (${esc(win.sight_state||"UNKNOWN")}) · possible: ${win.possible_visibility_tick ?? "—"}
@@ -746,7 +753,8 @@ function contactCardHtml(s){
       <span class="mono muted">${matchTag(s.match_info)}</span>
       <span class="mono muted">${playerTag(s.player_info)} · ${inRound(s.round, s.in_round_seconds, s.tick)}</span></div>
     <div class="why"><b>${t("predInit")}</b>: <span class="chip">${initMap[pred.initiation]||pred.initiation}</span>
-      <b>${t("predAction")}</b>: <span class="chip">${actMap[pred.top_label]||pred.top_label}${subMap[pred.subtype]? " · "+t(subMap[pred.subtype]) : ""}</span>${amb}</div>
+      <b>${t("predAction")}</b>: <span class="chip">${actMap[pred.top_label]||pred.top_label}${subMap[pred.subtype]? " · "+t(subMap[pred.subtype]) : ""}</span>${amb}
+      <span class="muted">${t("confLabel")}: ${confLevel(pred.confidence)}</span></div>
     <div class="why muted">${t("whyLabel")}: ${why}</div>
     <div class="row" style="margin-top:8px"><span class="muted" style="font-size:12px">${t("whoInitiated")}</span>
       ${qBtn("initiation","initYou",t("initYou"))}${qBtn("initiation","initEnemy",t("initEnemy"))}

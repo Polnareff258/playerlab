@@ -279,15 +279,25 @@ def motion_evidence(window: ContactWindow, relations: list[ExposureRelation],
                     idx: dict, cfg) -> InitiationMotionEvidence:
     """Measure both players inside the pre-contact motion window.
 
-    The window is the tail of the pre-contact span (up to
-    cfg.initiation_motion_window_ticks before the anchor tick). Bounded
-    per-player tick scans only — never the full demo index (PART T §50).
+    The decisive motion happens BEFORE the contact moment, not during it:
+    windowing around the shot/damage anchor captures both players mid-fight
+    and misreads every exchange as MUTUAL. We therefore measure the span
+    ending cfg.initiation_motion_window_ticks *before* the anchor (or before
+    the real visibility tick when available), i.e. the movement that CAUSED
+    the LOS transition. Bounded per-player scans only (PART T §50).
     """
     anchor = window.visibility_tick or window.possible_visibility_tick \
         or window.first_shot_tick or window.first_damage_tick \
         or window.resolution_tick or window.pre_contact_start
-    win_start = max(window.pre_contact_start, anchor - cfg.initiation_motion_window_ticks)
-    win_end = anchor
+    # measure the window ending BEFORE the anchor (the causing motion)
+    win_end = max(window.pre_contact_start,
+                  anchor - cfg.initiation_motion_window_ticks)
+    win_start = window.pre_contact_start
+    if win_end <= win_start:
+        # window too small: fall back to measuring right up to the anchor
+        win_end = anchor
+        win_start = max(window.pre_contact_start,
+                        anchor - cfg.initiation_motion_window_ticks)
 
     def measure(steamid: int):
         rows = [idx[(steamid, t)] for t in range(win_start, win_end + 1)
@@ -345,46 +355,43 @@ def classify_initiation_v2(ev: InitiationMotionEvidence, relations: list[Exposur
                            cfg) -> str:
     """ContactInitiation v2 — motion-based, never transition-tick equality.
 
-    Order: both stable -> STATIC_CONTACT; one clearly drives exposure ->
-    SELF/ENEMY_INITIATED; both move meaningfully -> MUTUAL; else UNKNOWN.
+    Order: both stable -> STATIC_CONTACT; one side drives exposure (sustained
+    motion, judged by mean speed / displacement — a brief speed peak is not
+    enough to count as driving) -> SELF/ENEMY_INITIATED; both move
+    meaningfully -> MUTUAL; else UNKNOWN.
     """
-    self_meaningful = (ev.self_mean_speed >= cfg.initiation_min_speed or
-                       ev.self_displacement >= cfg.initiation_min_displacement)
-    enemy_meaningful = (ev.enemy_mean_speed >= cfg.initiation_min_speed or
-                        ev.enemy_displacement >= cfg.initiation_min_displacement)
-    self_moving = (ev.self_mean_speed >= cfg.initiation_min_speed or
-                   ev.self_peak_speed >= cfg.initiation_min_speed * 1.5)
-    enemy_moving = (ev.enemy_mean_speed >= cfg.initiation_min_speed or
-                    ev.enemy_peak_speed >= cfg.initiation_min_speed * 1.5)
+    # sustained motion: mean speed or net displacement across the window
+    def meaningful(mean_speed: float, disp: float) -> bool:
+        return (mean_speed >= cfg.initiation_min_speed or
+                disp >= cfg.initiation_min_displacement)
+
+    self_meaningful = meaningful(ev.self_mean_speed, ev.self_displacement)
+    enemy_meaningful = meaningful(ev.enemy_mean_speed, ev.enemy_displacement)
 
     # both (mostly) static -> STATIC_CONTACT (smoke fade / geometry change)
     if (ev.self_mean_speed <= cfg.static_motion_max and
             ev.enemy_mean_speed <= cfg.static_motion_max):
         return "STATIC_CONTACT"
 
-    # mutual: both sides move meaningfully and neither is clearly dominant
-    max_mean = max(ev.self_mean_speed, ev.enemy_mean_speed, 1.0)
-    ratio = min(ev.self_mean_speed, ev.enemy_mean_speed) / max_mean
-    if (self_meaningful and enemy_meaningful and
-            ratio >= cfg.mutual_motion_ratio):
-        return "MUTUAL"
+    # both move meaningfully and neither dominates -> MUTUAL
+    if self_meaningful and enemy_meaningful:
+        max_mean = max(ev.self_mean_speed, ev.enemy_mean_speed, 1.0)
+        ratio = min(ev.self_mean_speed, ev.enemy_mean_speed) / max_mean
+        if ratio >= cfg.mutual_motion_ratio:
+            return "MUTUAL"
+        # one side clearly dominates sustained motion
+        return ("SELF_INITIATED" if ev.self_mean_speed >= ev.enemy_mean_speed
+                else "ENEMY_INITIATED")
 
-    # one side dominates motion
-    if self_meaningful and not enemy_meaningful:
-        # stable self + enemy moving -> ENEMY_INITIATED; moving self + stable
-        # enemy -> SELF_INITIATED
-        if self_moving and not enemy_moving:
-            return "SELF_INITIATED"
-        return "UNKNOWN" if not enemy_moving else "ENEMY_INITIATED"
-    if enemy_meaningful and not self_meaningful:
-        if enemy_moving and not self_moving:
-            return "ENEMY_INITIATED"
-        return "UNKNOWN" if not self_moving else "SELF_INITIATED"
-
-    # both moving but ratio below mutual threshold -> dominant side
-    if ev.self_mean_speed > ev.enemy_mean_speed:
+    # only one side has sustained motion -> that side initiated
+    if self_meaningful:
         return "SELF_INITIATED"
-    return "ENEMY_INITIATED"
+    if enemy_meaningful:
+        return "ENEMY_INITIATED"
+
+    # neither has sustained motion but the window shows movement (peaks):
+    # weak evidence -> UNKNOWN rather than guessing
+    return "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
