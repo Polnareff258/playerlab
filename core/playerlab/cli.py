@@ -472,13 +472,30 @@ def main(argv=None):
         from .db import DB
         from .contact_report import sanity_checks, initiation_distribution
         db = DB(cfg.db_path)
-        samples = db.get_contact_action_samples(review_status="pending", limit=100000)
-        preds = [(s.get("prediction") or {}) for s in samples]
-        preds = [p for p in preds if p]
-        dist = initiation_distribution(preds)
-        warnings = sanity_checks(preds, cfg)
-        report = {"n_samples": len(samples), "distribution": dist,
-                  "warnings": warnings}
+        samples = db.get_contact_action_samples(review_status=None, limit=100000)
+        all_preds = [(s.get("prediction") or {}) for s in samples
+                     if s.get("prediction")]
+        pending_preds = [(s.get("prediction") or {}) for s in samples
+                         if s.get("prediction") and s.get("review_status") == "pending"]
+        human_preds = [(s.get("prediction") or {}) for s in samples
+                       if s.get("prediction") and s.get("label_source") == "HUMAN"]
+        # PART X §46: ALL / PENDING / REVIEWED_HUMAN populations
+        report = {
+            "populations": {
+                "ALL": {"n": len(samples),
+                        "distribution": initiation_distribution(all_preds),
+                        "warnings": sanity_checks(all_preds, cfg)},
+                "PENDING": {"n": len(pending_preds),
+                            "distribution": initiation_distribution(pending_preds),
+                            "warnings": sanity_checks(pending_preds, cfg)},
+                "REVIEWED_HUMAN": {"n": len(human_preds),
+                                   "distribution": initiation_distribution(human_preds),
+                                   "warnings": sanity_checks(human_preds, cfg)},
+            },
+            "note": ("ALL = version distribution; PENDING = queue difficulty/"
+                     "active-learning health; REVIEWED_HUMAN = agreement/"
+                     "validation (selection-bias guard)."),
+        }
         print(json.dumps(report, ensure_ascii=False, indent=1, default=str))
         if args.out:
             with open(args.out, "w", encoding="utf-8") as fh:
