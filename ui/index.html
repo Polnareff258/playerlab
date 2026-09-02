@@ -192,8 +192,24 @@ const I18N = {
     contactSubmitOk: "接敌标注已保存",
     predInit: "系统判断", predAction: "系统判断动作",
     whyLabel: "判断依据",
-    confLabel: "置信度",
+    confLabel: "证据强度",
     contactAdvanced: "Advanced（位移/速度/朝向/LOS）",
+    chooseDemo: "先选择要审核的 Demo",
+    recommended: "推荐审核", allCandidates: "全部候选", reviewed: "已审核",
+    reviewRecommended: "Review Recommended", reviewAll: "Review All",
+    continueReview: "Continue Review", backToDemos: "Back to Demo List",
+    startNextDemo: "Start Next Demo", reviewCompleted: "Review completed.",
+    demoSummary: "Demo 审核汇总", totalSamples: "全部样本",
+    rawDemoEvidence: "Raw Demo Evidence（原始证据）",
+    blindNote: "盲审模式：提交前不显示系统判断",
+    yourLabel: "你的标注", playerLab: "PlayerLab", disagreement: "DISAGREEMENT",
+    nextSample: "下一片段", context: "接敌上下文",
+    insufficientInfo: "信息不足", insufficientSaved: "已标记信息不足",
+    skipSaved: "已跳过（之后可回看）",
+    conflictReview: "Conflict Review（分歧复核）",
+    noConflicts: "无分歧样本", reviseLabel: "复核修改标注",
+    backToSummary: "Back to Summary", revisionSaved: "复核标注已保存（原标注保留）",
+    round: "第", blindReview: "Blind Review", reviewConflicts: "Review Disagreements",
   },
   en: {
     headerSub: "Validation Hardening · Human Ground Truth",
@@ -297,8 +313,24 @@ const I18N = {
     contactSubmitOk: "Contact annotation saved",
     predInit: "System: initiator", predAction: "System: action",
     whyLabel: "Why",
-    confLabel: "confidence",
+    confLabel: "Evidence",
     contactAdvanced: "Advanced (displacement/speed/yaw/LOS)",
+    chooseDemo: "Choose Demo to Review",
+    recommended: "Recommended", allCandidates: "All candidates", reviewed: "Reviewed",
+    reviewRecommended: "Review Recommended", reviewAll: "Review All",
+    continueReview: "Continue Review", backToDemos: "Back to Demo List",
+    startNextDemo: "Start Next Demo", reviewCompleted: "Review completed.",
+    demoSummary: "Demo Review Summary", totalSamples: "Total samples",
+    rawDemoEvidence: "Raw Demo Evidence",
+    blindNote: "Blind review: system answers hidden until you submit",
+    yourLabel: "YOUR LABEL", playerLab: "PLAYERLAB", disagreement: "DISAGREEMENT",
+    nextSample: "Next sample", context: "contact context",
+    insufficientInfo: "Insufficient info", insufficientSaved: "Marked insufficient",
+    skipSaved: "Skipped (can return later)",
+    conflictReview: "Conflict Review",
+    noConflicts: "No disagreements", reviseLabel: "Revise label",
+    backToSummary: "Back to Summary", revisionSaved: "Revision saved (original kept)",
+    round: "Round", blindReview: "Blind Review", reviewConflicts: "Review Disagreements",
   }
 };
 let LANG = localStorage.getItem("playerlab_lang") || "zh";
@@ -703,109 +735,296 @@ async function submitReviewItem(reviewId, isIntent, isDecision){
   } catch(e){ toast(e.message); }
 }
 
-/* ---------------- Contact Review（接敌复盘，V1.3.4.1 PART L） ---------------- */
-let contactAnswers = {};   // { [sampleId]: {initiation, action, support} }
-let contactCache = {};
+/* ---------------- Contact Review（Demo 会话审核 V1.3.4.2 PART I-AE） ----- */
+// One Demo = One Review Session. 首页选 Demo -> Blind Review(隐藏系统答案)
+// -> 提交后 Reveal -> 完成后 Summary/Conflicts。样本按 round/tick 时间序。
+let contactSession = null;       // current session {session_id, sample_ids,...}
+let contactCur = null;          // current sample
+let contactBlind = {};          // staged blind answers for the current sample
+let contactView = "demos";      // demos | blind | revealed | summary | conflicts
+const contactInitMap = {SELF_INITIATED:t("initYou"), ENEMY_INITIATED:t("initEnemy"),
+                 MUTUAL:t("initBoth"), STATIC_CONTACT:t("initStatic"),
+                 INFORMATION_CONTACT:t("initUnsure"), UNKNOWN:t("initUnsure")};
+const contactActMap = {PEEK:t("actionPeek"), HOLD:t("actionHold"), RE_PEEK:t("actionRePeek"),
+              REPOSITION:t("actionRepos"), UNKNOWN:t("initUnsure")};
+const contactSubMap = {MICROADJUST_HOLD:t("actionMicro"), ACTIVE_HOLD:t("actionHold"),
+              STATIC_HOLD:t("actionHold"), SAME_ANGLE_RE_PEEK:t("actionRePeek")};
+
 async function renderContactReview(el){
   const g = beginRender();
-  const { samples } = await api("/api/contact-review").catch(()=>({samples:[]}));
-  contactCache = {}; for (const s of samples) contactCache[s.id] = s;
-  let html = `<h2>${t("contactReviewTitle")} <span class="muted">(${t("contactReviewNote")})</span></h2>`;
-  if (!samples.length) html += `<div class="card"><span class="muted">${t("noContactSamples")}</span></div>`;
-  for (const s of samples) html += contactCardHtml(s);
+  contactView = contactSession ? contactView : "demos";
+  let html = "";
+  if (!contactSession) {
+    html = await contactDemosHtml();
+  } else if (contactView === "summary") {
+    html = await contactSummaryHtml();
+  } else if (contactView === "conflicts") {
+    html = await contactConflictsHtml();
+  } else {
+    html = await contactSessionHtml();
+  }
   commitRender(el, g, html);
 }
-function contactCardHtml(s){
-  const ans = contactAnswers[s.id] || {};
-  const pred = s.prediction || {};
-  const win = s.contact_window || {};
-  const selCls = (q, v) => ans[q] === v ? "on" : "";
-  const qBtn = (q, v, label) => `<button class="btn ${selCls(q,v)}" onclick="contactAns('${s.id}','${q}','${v}')">${label}</button>`;
-  const confLevel = v => v==null ? "—" : v>=0.66 ? "High" : v>=0.4 ? "Medium" : "Low";
-  // system prediction line (readable, never raw JSON)
-  const initMap = {SELF_INITIATED:t("initYou"), ENEMY_INITIATED:t("initEnemy"),
-                   MUTUAL:t("initBoth"), STATIC_CONTACT:t("initStatic"),
-                   UNKNOWN:t("initUnsure"), INFORMATION_CONTACT:t("initUnsure")};
-  const actMap = {PEEK:t("actionPeek"), HOLD:t("actionHold"), RE_PEEK:t("actionRePeek"),
-                  REPOSITION:t("actionRepos"), UNKNOWN:t("initUnsure")};
-  const subMap = {MICROADJUST_HOLD:t("actionMicro"), ACTIVE_HOLD:t("actionHold"),
-                  STATIC_HOLD:t("actionHold"), SAME_ANGLE_RE_PEEK:t("actionRePeek")};
-  const amb = pred.ambiguous ? ` <span class="chip MEDIUM">${esc((pred.ambiguous_labels||[]).map(l=>actMap[l]||l).join(" / "))}</span>` : "";
-  const why = esc(pred.why || t("initUnsure"));
-  // advanced panel: motion numbers only when expanded. motion lives in
-  // prediction.evidence.motion (new persist) OR sample.motion_sequence
-  const mot = (pred.evidence||{}).motion || (s.motion_sequence||{}) || {};
-  const probStr = pred.probabilities ? Object.entries(pred.probabilities)
-    .map(([k,v]) => `${k}=${Math.round(v*100)}%`).join(" · ") : "";
-  const adv = `
-    <details style="margin-top:8px"><summary class="muted" style="cursor:pointer">${t("contactAdvanced")}</summary>
-      <div class="mono muted" style="font-size:11px;margin-top:4px">
-        raw: ${esc(probStr)}<br>
-        self: disp ${fmtNum(mot.self_displacement)}u mean ${fmtNum(mot.self_mean_speed)} peak ${fmtNum(mot.self_peak_speed)} yawΔ ${fmtNum(mot.self_yaw_change)}°<br>
-        enemy: disp ${fmtNum(mot.enemy_displacement)}u mean ${fmtNum(mot.enemy_mean_speed)} peak ${fmtNum(mot.enemy_peak_speed)} yawΔ ${fmtNum(mot.enemy_yaw_change)}°<br>
-        visibility_tick: ${win.visibility_tick ?? "—"} (${esc(win.sight_state||"UNKNOWN")}) · possible: ${win.possible_visibility_tick ?? "—"}
+async function contactDemosHtml(){
+  const { demos } = await api("/api/contact-review/demos").catch(()=>({demos:[]}));
+  let h = `<h2>${t("contactReviewTitle")} <span class="muted">(${t("chooseDemo")})</span></h2>`;
+  if (!demos.length) h += `<div class="card"><span class="muted">${t("noContactSamples")}</span></div>`;
+  for (const d of demos){
+    const statusChip = d.status==="COMPLETED" ? '<span class="chip ok">Complete</span>'
+      : d.status==="IN_PROGRESS" ? '<span class="chip MEDIUM">In progress</span>' : "";
+    h += `<div class="card">
+      <div class="row"><b>${esc(d.map||d.demo_id)}</b>
+        <span class="muted">${esc(fmtTime(d.match_time))}</span>${statusChip}</div>
+      <div class="muted mono" style="font-size:11px">${esc(d.demo_file||"")}</div>
+      ${d.focus_player ? `<div class="why">${t("focusPlayer")}: ${esc(d.focus_player.display_name)}${d.focus_player.team?` (${t("team")} ${d.focus_player.team})`:""}</div>` : ""}
+      <div class="why muted">${t("recommended")}: ${d.recommended_count} / ${t("allCandidates")}: ${d.candidate_count} · ${t("reviewed")}: ${d.reviewed_count}</div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" onclick="contactStartDemo('${d.demo_id}',${d.focus_player ? "'"+d.focus_player.steam_id+"'" : "null"},true)">${t("reviewRecommended")}</button>
+        <button class="btn" onclick="contactStartDemo('${d.demo_id}',${d.focus_player ? "'"+d.focus_player.steam_id+"'" : "null"},false)">${t("reviewAll")}</button>
+        ${d.session_id ? `<button class="btn" onclick="contactResume('${d.session_id}')">${t("continueReview")}</button>` : ""}
       </div>
-    </details>`;
-  const allAnswered = ans.initiation && ans.action && ans.support;
-  const confirmBtn = `<button class="btn" ${allAnswered?"":"disabled style='opacity:.5'"} onclick="contactSubmit('${s.id}')">${t("confirmSubmit")}</button>`;
-  return `<div class="rev" id="crev-${s.id}">
-    <div class="row"><span class="chip">Contact</span>
-      <span class="mono muted">${matchTag(s.match_info)}</span>
-      <span class="mono muted">${playerTag(s.player_info)} · ${inRound(s.round, s.in_round_seconds, s.tick)}</span></div>
-    <div class="why"><b>${t("predInit")}</b>: <span class="chip">${initMap[pred.initiation]||pred.initiation}</span>
-      <b>${t("predAction")}</b>: <span class="chip">${actMap[pred.top_label]||pred.top_label}${subMap[pred.subtype]? " · "+t(subMap[pred.subtype]) : ""}</span>${amb}
-      <span class="muted">${t("confLabel")}: ${confLevel(pred.confidence)}</span></div>
-    <div class="why muted">${t("whyLabel")}: ${why}</div>
-    <div class="row" style="margin-top:8px"><span class="muted" style="font-size:12px">${t("whoInitiated")}</span>
-      ${qBtn("initiation","initYou",t("initYou"))}${qBtn("initiation","initEnemy",t("initEnemy"))}
-      ${qBtn("initiation","initBoth",t("initBoth"))}${qBtn("initiation","initStatic",t("initStatic"))}
-      ${qBtn("initiation","initNoContact",t("initNoContact"))}${qBtn("initiation","initUnsure",t("initUnsure"))}</div>
-    <div class="row" style="margin-top:6px"><span class="muted" style="font-size:12px">${t("whatDoing")}</span>
-      ${qBtn("action","actionPeek",t("actionPeek"))}${qBtn("action","actionHold",t("actionHold"))}
-      ${qBtn("action","actionMicro",t("actionMicro"))}${qBtn("action","actionRePeek",t("actionRePeek"))}
-      ${qBtn("action","actionRepos",t("actionRepos"))}${qBtn("action","actionOther",t("actionOther"))}
-      ${qBtn("action","initUnsure",t("initUnsure"))}</div>
-    <div class="row" style="margin-top:6px"><span class="muted" style="font-size:12px">${t("whatSupport")}</span>
-      ${qBtn("support","supSelfUtil",t("supSelfUtil"))}${qBtn("support","supTeamUtil",t("supTeamUtil"))}
-      ${qBtn("support","supCoord",t("supCoord"))}${qBtn("support","supStealth",t("supStealth"))}
-      ${qBtn("support","supNone",t("supNone"))}${qBtn("support","supUnsure",t("supUnsure"))}</div>
-    <div class="row" style="margin-top:10px">${confirmBtn}</div>
-    ${adv}
-  </div>`;
+    </div>`;
+  }
+  return h;
 }
-function contactAns(sampleId, q, v){ contactAnswers[sampleId] = Object.assign({}, contactAnswers[sampleId]||{}, {[q]: v}); rerenderContactCard(sampleId); }
-function rerenderContactCard(sampleId){
-  // keep all other cards untouched: rebuild only this one from its cached item
-  const cache = contactCache[sampleId];
-  if (!cache) return;
-  const tmp = document.createElement("div");
-  tmp.innerHTML = contactCardHtml(cache);
-  const el = document.getElementById("crev-"+sampleId);
-  if (el) el.replaceWith(tmp.firstElementChild);
-}
-async function contactSubmit(sampleId){
-  const ans = contactAnswers[sampleId] || {};
-  if (!ans.initiation || !ans.action || !ans.support) return toast(t("initUnsure"));
-  const humanInit = {initYou:"SELF_INITIATED", initEnemy:"ENEMY_INITIATED",
-                     initBoth:"MUTUAL", initStatic:"STATIC_CONTACT",
-                     initNoContact:"NO_CONTACT", initUnsure:"UNSURE"}[ans.initiation];
-  const humanAct = {actionPeek:"PEEK", actionHold:"HOLD", actionMicro:"MICROADJUST_HOLD",
-                    actionRePeek:"RE_PEEK", actionRepos:"REPOSITION",
-                    actionOther:"OTHER", initUnsure:"UNSURE"}[ans.action];
-  const humanSup = {supSelfUtil:"SELF_UTILITY", supTeamUtil:"TEAM_UTILITY_ASSISTED",
-                    supCoord:"COORDINATED_TEAM_PEEK", supStealth:"STEALTH_PRESERVING",
-                    supNone:"UNASSISTED", supUnsure:"UNSURE"}[ans.support];
+async function contactStartDemo(demoId, steamId, recommended){
+  if (!steamId) return toast(t("selectPlayerFirst"));
   try {
-    await api("/api/contact-review-review", {method:"POST",
+    // steam_id is passed as a STRING end-to-end: JS numbers lose precision
+    // above 2^53, so parseInt must never be used on steam ids
+    const r = await api("/api/contact-review/session/start", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({sample_id: sampleId, human_initiation: humanInit,
-                            human_action: humanAct, human_support: humanSup,
-                            human_confidence: 0.8})});
-    delete contactAnswers[sampleId]; delete contactCache[sampleId];
-    toast(t("contactSubmitOk"));
+      body: JSON.stringify({demo_id:demoId, player_id: String(steamId),
+                            recommended_only: recommended})});
+    contactSession = r.session; contactView = "blind";
+    await contactLoadCurrent();
     renderContactReview($("#app"));
   } catch(e){ toast(e.message); }
 }
+async function contactResume(sessionId){
+  const r = await api("/api/contact-review/session/"+sessionId).catch(()=>({session:null}));
+  if (!r.session) return toast("session not found");
+  contactSession = r.session; contactView = "blind";
+  await contactLoadCurrent();
+  renderContactReview($("#app"));
+}
+async function contactLoadCurrent(){
+  const r = await api("/api/contact-review/session/"+contactSession.session_id+"/current").catch(()=>({sample:null}));
+  contactCur = r.sample;
+  contactSession.index = r.index; contactSession.total = r.total;
+  contactBlind = {};
+  if (contactCur) { contactCur.player_info = r.sample.player_info; }
+}
+async function contactSessionHtml(){
+  if (!contactCur) {
+    // no unresolved samples -> summary
+    contactView = "summary";
+    return contactSummaryHtml();
+  }
+  const s = contactCur;
+  const win = s.contact_window || {};
+  const idx = (contactSession.index||0)+1, total = contactSession.total||0;
+  let h = `<h2>${t("contactReviewTitle")} <span class="muted">${idx} / ${total}</span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <button class="btn" onclick="contactNav(-1)" ${idx<=1?"disabled":""}>${t("prev")}</button>
+      <span class="muted">${t("round")} ${s.round||"—"} · ${fmtClock(s.in_round_seconds)} · tick ${s.tick}</span>
+      <button class="btn" onclick="contactNav(1)" ${idx>=total?"disabled":""}>${t("next")}</button>
+    </div>`;
+  // round jump selector (PART U) — rounds derived from the frozen sample list
+  const rounds = (contactSession.sample_ids||[]).length ? (contactSession.roundsCache||[]) : [];
+  if (rounds.length) {
+    h += `<div class="row muted" style="font-size:11px">${rounds.map(r=>`<button class="btn" style="padding:1px 6px" onclick="contactJumpRound(${r})">R${r}</button>`).join(" ")}</div>`;
+  }
+  h += `<div class="rev">
+    <div class="row"><span class="chip">${t("round")} ${s.round||"—"} · ${fmtClock(s.in_round_seconds)}</span>
+      <span class="mono muted">tick ${s.tick}</span>
+      ${s.player_info?`<span class="mono muted">${esc(s.player_info.display_name)}</span>`:""}
+      ${win.first_shot_tick ? `<span class="muted mono" style="font-size:11px">shot ${win.first_shot_tick}</span>`:""}</div>
+    <div class="why muted">${esc(s.match_info? (s.match_info.map_name||"") : "")} · ${t("context")}</div>
+    ${contactRawEvidence(s)}`;
+  if (contactView === "blind") {
+    h += contactBlindQuestionsHtml(s);
+  } else if (contactView === "revealed") {
+    h += contactRevealHtml(s);
+  }
+  h += `</div>`;
+  return h;
+}
+// raw demo evidence (PART W): positions/movement/timing only, no system labels
+function contactRawEvidence(s){
+  const win = s.contact_window || {};
+  const mot = (s.motion_sequence||{}) || {};
+  const timeline = [];
+  if (win.visibility_tick) timeline.push(`visibility ${win.visibility_tick}`);
+  if (win.possible_visibility_tick) timeline.push(`possible align ${win.possible_visibility_tick}`);
+  if (win.first_shot_tick) timeline.push(`shot ${win.first_shot_tick}`);
+  if (win.first_damage_tick) timeline.push(`damage ${win.first_damage_tick}`);
+  const tl = timeline.length ? `<div class="mono muted" style="font-size:11px">${timeline.join(" → ")}</div>` : "";
+  const motRow = (mot.self_mean_speed||mot.enemy_mean_speed) ? `
+    <div class="mono muted" style="font-size:11px">self mv: ${fmtNum(mot.self_mean_speed)}u/s · enemy mv: ${fmtNum(mot.enemy_mean_speed)}u/s · self disp ${fmtNum(mot.self_displacement)}u · enemy disp ${fmtNum(mot.enemy_displacement)}u</div>` : "";
+  return `<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">${t("rawDemoEvidence")}</summary>
+    ${tl}${motRow}</details>`;
+}
+function contactBlindQuestionsHtml(s){
+  const sel = q => contactBlind[q] ? `<span class="chip ok" style="margin-left:6px">✓</span>` : "";
+  const qbtn = (q, v, label) => `<button class="btn ${contactBlind[q]===v?"on":""}" onclick="contactBlindPick('${q}','${v}')">${label}</button>`;
+  let h = `<div class="why"><b>${t("whoInitiated")}</b>${sel("initiation")}</div>
+    <div class="row">${qbtn("initiation","initYou",t("initYou"))}${qbtn("initiation","initEnemy",t("initEnemy"))}
+      ${qbtn("initiation","initBoth",t("initBoth"))}${qbtn("initiation","initStatic",t("initStatic"))}
+      ${qbtn("initiation","initNoContact",t("initNoContact"))}${qbtn("initiation","initUnsure",t("initUnsure"))}</div>
+    <div class="why" style="margin-top:8px"><b>${t("whatDoing")}</b>${sel("action")}</div>
+    <div class="row">${qbtn("action","actionPeek",t("actionPeek"))}${qbtn("action","actionHold",t("actionHold"))}
+      ${qbtn("action","actionMicro",t("actionMicro"))}${qbtn("action","actionRePeek",t("actionRePeek"))}
+      ${qbtn("action","actionRepos",t("actionRepos"))}${qbtn("action","actionOther",t("actionOther"))}</div>
+    <div class="why" style="margin-top:8px"><b>${t("whatSupport")}</b>${sel("support")}</div>
+    <div class="row">${qbtn("support","supSelfUtil",t("supSelfUtil"))}${qbtn("support","supTeamUtil",t("supTeamUtil"))}
+      ${qbtn("support","supCoord",t("supCoord"))}${qbtn("support","supStealth",t("supStealth"))}
+      ${qbtn("support","supNone",t("supNone"))}${qbtn("support","supUnsure",t("supUnsure"))}</div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" onclick="contactSubmitBlind()" ${contactBlind.initiation&&contactBlind.action&&contactBlind.support?"":"disabled style='opacity:.5'"}>${t("confirmSubmit")}</button>
+      <button class="btn" onclick="contactSkipCur()">${t("skip")} (S)</button>
+      <button class="btn" onclick="contactInsufficient()">${t("insufficientInfo")} (I)</button>
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:4px">${t("blindNote")}</div>`;
+  return h;
+}
+function contactRevealHtml(s){
+  const pred = s.prediction || {};
+  const humanInit = contactBlind.initiation ? contactBlindInitMap[contactBlind.initiation] : "—";
+  const humanAct = contactBlind.action ? contactBlindActMap[contactBlind.action] : "—";
+  const humanSup = contactBlind.support ? contactBlindSupMap[contactBlind.support] : "—";
+  const sysInit = contactInitMap[pred.initiation]||pred.initiation||"—";
+  const sysAct = contactActMap[pred.top_label]||pred.top_label||"—";
+  const disagree = (humanInit!=="—" && sysInit!=="—" && humanInit!==sysInit);
+  let h = `<div class="why"><b>${t("yourLabel")}</b>: ${humanInit} · ${humanAct} · ${humanSup}</div>
+    <div class="why"><b>${t("playerLab")}</b>: ${sysInit} · ${sysAct}${pred.why?` <span class="muted">(${esc(pred.why)})</span>`:""}</div>`;
+  if (disagree) h += `<div class="chip MEDIUM" style="margin-top:4px">${t("disagreement")}</div>`;
+  h += `<div class="row" style="margin-top:10px"><button class="btn" onclick="contactNext()">${t("nextSample")}</button></div>`;
+  return h;
+}
+async function contactSubmitBlind(){
+  const s = contactCur;
+  const b = contactBlind;
+  if (!b.initiation || !b.action || !b.support) return;
+  try {
+    await api("/api/contact-review/session/"+contactSession.session_id+"/answer", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        sample_id: s.id,
+        human_initiation: contactBlindInitMap[b.initiation],
+        human_action: contactBlindActMap[b.action],
+        human_support: contactBlindSupMap[b.support],
+        outcome: "LABELED", blind: true, human_confidence: 0.8})});
+    contactView = "revealed";
+    // advance session cursor server-side already; next sample loads on Next
+    renderContactReview($("#app"));
+  } catch(e){ toast(e.message); }
+}
+async function contactNext(){
+  await contactLoadCurrent();
+  contactView = "blind";
+  renderContactReview($("#app"));
+}
+async function contactNav(delta){
+  const ids = contactSession.sample_ids || [];
+  const cur = ids.indexOf(contactCur ? contactCur.id : "");
+  const target = Math.max(0, Math.min(ids.length-1, cur+delta));
+  contactSession.current_index = target;
+  await contactLoadCurrent();
+  renderContactReview($("#app"));
+}
+async function contactJumpRound(rnum){
+  const ids = contactSession.sample_ids || [];
+  // find first sample with this round (samples sorted by round,tick)
+  for (let i=0;i<ids.length;i++){
+    const sid = ids[i];
+    const row = await api("/api/contact-review/session/"+contactSession.session_id+"/current").catch(()=>({sample:null}));
+    break;
+  }
+  toast("jump: sample list is frozen per round order; use Prev/Next");
+}
+function contactBlindPick(q,v){ contactBlind[q]=v; rerenderBlindCard(); }
+async function contactSkipCur(){
+  if (!contactCur) return;
+  await api("/api/contact-review/session/"+contactSession.session_id+"/skip", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({sample_id: contactCur.id})});
+  toast(t("skipSaved"));
+  await contactLoadCurrent();
+  contactView = "blind";
+  renderContactReview($("#app"));
+}
+async function contactInsufficient(){
+  if (!contactCur) return;
+  await api("/api/contact-review/session/"+contactSession.session_id+"/answer", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({sample_id: contactCur.id, human_initiation:"", human_action:"",
+                          human_support:"", outcome:"INSUFFICIENT_INFORMATION", blind:true})});
+  toast(t("insufficientSaved"));
+  await contactLoadCurrent();
+  renderContactReview($("#app"));
+}
+function rerenderBlindCard(){
+  // blind card is a single visible card; full rerender keeps it consistent
+  renderContactReview($("#app"));
+}
+async function contactSummaryHtml(){
+  const r = await api("/api/contact-review/session/"+contactSession.session_id+"/summary").catch(()=>({summary:{}}));
+  const sm = r.summary || {};
+  let h = `<h2>${t("demoSummary")} <span class="muted">${esc(sm.demo_id||"")}</span></h2>`;
+  h += `<div class="card"><div class="row stat"><span>${t("reviewed")} <b>${sm.reviewed_count??0}</b></span>
+    <span>${t("insufficientInfo")} <b>${sm.insufficient_count??0}</b></span>
+    <span>${t("totalSamples")} <b>${sm.total_samples??0}</b></span></div>
+    ${sm.model_agreement?`<div class="why muted">init ${pct(sm.model_agreement.initiation)} · action ${pct(sm.model_agreement.action)} · support ${pct(sm.model_agreement.support)}</div>`:""}</div>`;
+  h += `<div class="card"><h3>${t("reviewCompleted")}</h3>
+    <div class="row"><button class="btn" onclick="contactView='conflicts';renderContactReview(\$('#app'))">${t("reviewConflicts")}</button>
+    <button class="btn" onclick="contactExitSession()">${t("backToDemos")}</button>
+    <button class="btn" onclick="contactExitSession()">${t("startNextDemo")}</button></div></div>`;
+  return h;
+}
+async function contactConflictsHtml(){
+  const r = await api("/api/contact-review/session/"+contactSession.session_id+"/conflicts").catch(()=>({conflicts:[]}));
+  const cs = r.conflicts || [];
+  let h = `<h2>${t("conflictReview")} <span class="muted">${cs.length} ${t("disagreements")}</span></h2>`;
+  if (!cs.length) h += `<div class="card"><span class="muted">${t("noConflicts")}</span></div>`;
+  for (const c of cs){
+    const pred = c.prediction || {};
+    h += `<div class="rev"><div class="row"><span class="chip">r${c.round} t${c.tick}</span>
+      <span class="muted">${t("playerLab")}: ${contactInitMap[pred.initiation]||"—"} / ${contactActMap[pred.top_label]||"—"}</span></div>
+      <div class="why muted">${esc(pred.why||"")}</div>
+      <button class="btn" onclick="contactRevise('${c.id}')">${t("reviseLabel")}</button></div>`;
+  }
+  h += `<div class="row" style="margin-top:8px"><button class="btn" onclick="contactView='summary';renderContactReview(\$('#app'))">${t("backToSummary")}</button></div>`;
+  return h;
+}
+async function contactRevise(sampleId){
+  // revision keeps original blind annotation; open a small prompt-free flow
+  const s = contactCur;
+  const humanInit = prompt(t("whoInitiated")+" (SELF_INITIATED/ENEMY_INITIATED/MUTUAL/STATIC_CONTACT/UNKNOWN/UNSURE)");
+  if (!humanInit) return;
+  await api("/api/contact-review/session/"+contactSession.session_id+"/revision", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({sample_id: sampleId, original_annotation_id:"blind",
+                          human_initiation: humanInit, human_action: "", human_support: "",
+                          reason:"conflict revision"})});
+  toast(t("revisionSaved"));
+  renderContactReview($("#app"));
+}
+function contactExitSession(){
+  contactSession = null; contactCur = null; contactBlind = {};
+  location.hash = "#/contact";
+  renderContactReview($("#app"));
+}
+const contactBlindInitMap = {initYou:"SELF_INITIATED", initEnemy:"ENEMY_INITIATED",
+              initBoth:"MUTUAL", initStatic:"STATIC_CONTACT",
+              initNoContact:"NO_CONTACT", initUnsure:"UNSURE"};
+const contactBlindActMap = {actionPeek:"PEEK", actionHold:"HOLD", actionMicro:"MICROADJUST_HOLD",
+              actionRePeek:"RE_PEEK", actionRepos:"REPOSITION",
+              actionOther:"OTHER", initUnsure:"UNSURE"};
+const contactBlindSupMap = {supSelfUtil:"SELF_UTILITY", supTeamUtil:"TEAM_UTILITY_ASSISTED",
+              supCoord:"COORDINATED_TEAM_PEEK", supStealth:"STEALTH_PRESERVING",
+              supNone:"UNASSISTED", supUnsure:"UNSURE"};
+const fmtClock = sec => sec==null||sec===undefined||isNaN(sec) ? "—" :
+  `${String(Math.floor(sec/60)).padStart(2,"0")}:${String(Math.floor(sec%60)).padStart(2,"0")}`;
 const fmtNum = v => (v===undefined||v===null||isNaN(v)) ? "—" : (Math.round(v*10)/10).toString();
 
 /* ---------------- Decisions（DecisionEpisode 决策片段） ---------------- */
@@ -955,6 +1174,26 @@ async function calReviewFP(sampleId){
   } catch(e){ toast(e.message); }
 }
 document.addEventListener("keydown", e => {
+  // Contact Review shortcuts (PART AF): S=skip, I=insufficient, 1/2/3 = Q1-3
+  if (contactSession && contactCur && contactView === "blind" && e.target.tagName !== "INPUT") {
+    const k = e.key.toLowerCase();
+    if (k === "s") { contactSkipCur(); return; }
+    if (k === "i") { contactInsufficient(); return; }
+    const opts = {
+      "1": ["initiation", ["initYou","initEnemy","initBoth","initStatic","initNoContact","initUnsure"]],
+      "2": ["action", ["actionPeek","actionHold","actionMicro","actionRePeek","actionRepos","actionOther"]],
+      "3": ["support", ["supSelfUtil","supTeamUtil","supCoord","supStealth","supNone","supUnsure"]],
+    };
+    const cfg = opts[e.key];
+    if (cfg) {
+      const [q, choices] = cfg;
+      const cur = choices.indexOf(contactBlind[q]);
+      contactBlind[q] = choices[(cur+1) % choices.length];  // cycle options
+      rerenderBlindCard();
+      return;
+    }
+    if (e.key === "Enter") { contactSubmitBlind(); return; }
+  }
   if (!location.hash.startsWith("#/calibration")) return;
   if (e.key === "1") { const s = calSession[calIdx]; if (s) calReview(s.id, "YES", 1); }
   if (e.key === "2") { const s = calSession[calIdx]; if (s) calReview(s.id, "NO", 1); }

@@ -49,6 +49,11 @@ def _dual_records(self_rows, enemy_rows, base_x=0.0, base_y=0.0):
     return idx
 
 
+def _causal_window(vis_tick=13, pre=10, shot=None, res=16):
+    """ContactWindow WITH a real visibility_tick (causal classification)."""
+    return ContactWindow(pre, vis_tick, shot, None, res, 1, 2)
+
+
 def test_sight_state_requires_geometry_for_visible():
     assert sight_state({"in_fov": True}, {}, None) == "POSSIBLY_VISIBLE"
     assert sight_state({"in_fov": True}, {}, False) == "IN_FOV_OCCLUDED"
@@ -66,13 +71,14 @@ def test_enemy_moves_out_self_holds_is_enemy_initiated_hold():
     cfg = Config(hold_stability_ticks=4, initiation_motion_window_ticks=8,
                  initiation_min_speed=80.0, initiation_min_displacement=24.0)
     # self stable at x=0 (700ms+ = many ticks), enemy moves out near contact
-    window = ContactWindow(10, None, None, None, 16, 1, 2)
+    # real visibility at tick 13 -> causal classification enabled
+    window = _causal_window(vis_tick=13, pre=10, res=16)
     relations = ([_relation(t, "COVERED", "COVERED") for t in range(10, 13)] +
                  [_relation(t, "EXPOSED", "EXPOSED") for t in range(13, 17)])
-    # motion window is the tail [8..16] of pre-contact [10..16]
+    # motion measured in [vis-W, vis] = [5..13]; idx covers 10..16
     self_rows = [(t, 0, 0, 0) for t in range(10, 17)]          # stable
-    enemy_rows = ([(t, 50, 0, 90) for t in range(10, 13)] +    # stable
-                  [(t, 50 + 30 * (t - 12), 200, 90) for t in range(13, 17)])  # swings
+    enemy_rows = ([(t, 50, 0, 90) for t in range(10, 12)] +    # stable early
+                  [(t, 50 + 30 * (t - 11), 200, 90) for t in range(12, 17)])  # swings
     idx = _dual_records(self_rows, enemy_rows, base_y=0.0)
     p = classify_contact(window, relations, idx, cfg)
     assert p.initiation == "ENEMY_INITIATED"
@@ -84,11 +90,12 @@ def test_enemy_moves_out_self_holds_is_enemy_initiated_hold():
 def test_self_moves_out_enemy_holds_is_self_initiated_peek():
     cfg = Config(hold_stability_ticks=4, initiation_motion_window_ticks=8,
                  initiation_min_speed=80.0, initiation_min_displacement=24.0)
-    window = ContactWindow(10, None, None, None, 16, 1, 2)
+    window = _causal_window(vis_tick=13, pre=10, res=16)
     relations = ([_relation(t, "COVERED", "COVERED") for t in range(10, 13)] +
                  [_relation(t, "EXPOSED", "EXPOSED") for t in range(13, 17)])
-    self_rows = ([(t, 0, 0, 0) for t in range(10, 13)] +
-                 [(t, 30 * (t - 12), 200, 0) for t in range(13, 17)])  # peeks out
+    # self moves right before visibility (ticks 10-13), enemy holds
+    self_rows = ([(t, 30 * (t - 10), 0, 0) for t in range(10, 12)] +
+                 [(t, 30 * (t - 10), 200, 0) for t in range(12, 17)])
     enemy_rows = [(t, 100, 0, 180) for t in range(10, 17)]     # holds angle
     idx = _dual_records(self_rows, enemy_rows)
     p = classify_contact(window, relations, idx, cfg)
@@ -101,7 +108,7 @@ def test_both_move_is_mutual_not_peek():
     cfg = Config(initiation_motion_window_ticks=8,
                  initiation_min_speed=80.0, initiation_min_displacement=24.0,
                  mutual_motion_ratio=0.5)
-    window = ContactWindow(10, None, None, None, 16, 1, 2)
+    window = _causal_window(vis_tick=13, pre=10, res=16)
     relations = ([_relation(t, "COVERED", "COVERED") for t in range(10, 13)] +
                  [_relation(t, "EXPOSED", "EXPOSED") for t in range(13, 17)])
     self_rows = [(t, 20 * (t - 10), 150, 0) for t in range(10, 17)]   # moves
@@ -138,13 +145,13 @@ def test_micro_ad_is_microadjust_hold_not_peek():
     cfg = Config(hold_stability_ticks=4, hold_max_displacement=48.0,
                  initiation_motion_window_ticks=8,
                  initiation_min_speed=80.0)
-    window = ContactWindow(10, None, None, None, 16, 1, 2)
+    window = _causal_window(vis_tick=13, pre=10, res=16)
     relations = ([_relation(t, "COVERED", "COVERED") for t in range(10, 13)] +
                  [_relation(t, "EXPOSED", "EXPOSED") for t in range(13, 17)])
-    # self does small AD (x jitter 0-2), enemy swings out
+    # self does small AD (x jitter 0-2), enemy swings out before visibility
     self_rows = [(t, 1 if t % 2 else 0, 20, 0) for t in range(10, 17)]
-    enemy_rows = ([(t, 50, 0, 90) for t in range(10, 13)] +
-                  [(t, 50 + 30 * (t - 12), 180, 90) for t in range(13, 17)])
+    enemy_rows = ([(t, 50, 0, 90) for t in range(10, 11)] +
+                  [(t, 50 + 30 * (t - 10), 180, 90) for t in range(11, 17)])
     idx = _dual_records(self_rows, enemy_rows)
     p = classify_contact(window, relations, idx, cfg)
     assert p.top_label == "HOLD"
@@ -153,16 +160,17 @@ def test_micro_ad_is_microadjust_hold_not_peek():
 
 # --- old-v1.3.4 semantics now forbidden --------------------------------------
 def test_transition_tick_equality_no_longer_implies_mutual():
-    """The V1.3.4 bug: self_tick == enemy_tick -> MUTUAL. Now motion decides."""
+    """The V1.3.4 bug: self_tick == enemy_tick -> MUTUAL. Now motion decides
+    (with real visibility enabling causality)."""
     cfg = Config(initiation_motion_window_ticks=8)
-    window = ContactWindow(10, None, None, None, 16, 1, 2)
+    window = _causal_window(vis_tick=13, pre=10, res=16)
     # SAME transition tick for both, but self is stable and enemy moved:
     # must be ENEMY_INITIATED, never MUTUAL
     relations = ([_relation(t, "COVERED", "COVERED") for t in range(10, 13)] +
                  [_relation(t, "EXPOSED", "EXPOSED") for t in range(13, 17)])
     self_rows = [(t, 0, 0, 0) for t in range(10, 17)]
-    enemy_rows = ([(t, 50, 0, 90) for t in range(10, 13)] +
-                  [(t, 50 + 30 * (t - 12), 200, 90) for t in range(13, 17)])
+    enemy_rows = ([(t, 50, 0, 90) for t in range(10, 11)] +
+                  [(t, 50 + 30 * (t - 10), 200, 90) for t in range(11, 17)])
     idx = _dual_records(self_rows, enemy_rows)
     ev = motion_evidence(window, relations, idx, cfg)
     init = classify_initiation_v2(ev, relations, cfg)
@@ -501,3 +509,135 @@ def test_csnet_assist_has_no_action_mutation_surface():
     # collect returns only model evidence keys — no 'action'/'label' outputs
     p = CSNetAssistProvider(_cfg(csnet_repo_dir="missing"))
     assert p.collect("d", ContactWindow(1, 2, None, None, 3, 1, 2), [2]) is None
+
+
+# ============================================================================
+# V1.3.4.2 PART A-F: MotionRelation / ContactInitiation decoupling
+# ============================================================================
+def test_no_visibility_both_moving_gives_both_moving_not_mutual():
+    """PART AL #1 / DoD A: no real visibility + both moving ->
+    MotionRelation=BOTH_MOVING, ContactInitiation=UNKNOWN (never auto MUTUAL)."""
+    from playerlab.contact_semantics import (classify_motion_relation,
+                                             motion_evidence)
+    cfg = Config(initiation_motion_window_ticks=8,
+                 initiation_min_speed=80.0, initiation_min_displacement=24.0)
+    window = ContactWindow(10, None, None, None, 16, 1, 2)  # no visibility
+    relations = [_relation(t, "UNKNOWN", "UNKNOWN", None, None)
+                 for t in range(10, 17)]
+    self_rows = [(t, 20 * (t - 10), 150, 0) for t in range(10, 17)]
+    enemy_rows = [(t, 100 - 20 * (t - 10), 150, 180) for t in range(10, 17)]
+    idx = _dual_records(self_rows, enemy_rows)
+    ev = motion_evidence(window, relations, idx, cfg)
+    assert ev.causal is False
+    mr = classify_motion_relation(ev, cfg)
+    assert mr.relation == "BOTH_MOVING"
+    init = classify_initiation_v2(ev, relations, cfg)
+    assert init == "UNKNOWN"
+
+
+def test_no_visibility_self_moving_enemy_stable_no_causality():
+    """PART B §4: self moving + enemy stable without LOS -> MotionRelation
+    SELF_MOVING, but ContactInitiation stays UNKNOWN (no strong claim)."""
+    from playerlab.contact_semantics import (classify_motion_relation,
+                                             motion_evidence)
+    cfg = Config(initiation_motion_window_ticks=8,
+                 initiation_min_speed=80.0, initiation_min_displacement=24.0)
+    window = ContactWindow(10, None, None, None, 16, 1, 2)
+    relations = [_relation(t, "UNKNOWN", "UNKNOWN", None, None)
+                 for t in range(10, 17)]
+    self_rows = [(t, 30 * (t - 10), 200, 0) for t in range(10, 17)]
+    enemy_rows = [(t, 100, 0, 180) for t in range(10, 17)]
+    idx = _dual_records(self_rows, enemy_rows)
+    ev = motion_evidence(window, relations, idx, cfg)
+    assert ev.causal is False
+    mr = classify_motion_relation(ev, cfg)
+    assert mr.relation == "SELF_MOVING"
+    assert classify_initiation_v2(ev, relations, cfg) == "UNKNOWN"
+
+
+def test_visibility_exists_both_drive_transition_is_mutual():
+    """PART AL #2: real visibility + both move meaningfully -> MUTUAL."""
+    from playerlab.contact_semantics import (classify_motion_relation,
+                                             motion_evidence)
+    cfg = Config(initiation_motion_window_ticks=8,
+                 initiation_min_speed=80.0, initiation_min_displacement=24.0,
+                 mutual_motion_ratio=0.5)
+    window = _causal_window(vis_tick=13, pre=10, res=16)
+    relations = ([_relation(t, "COVERED", "COVERED") for t in range(10, 13)] +
+                 [_relation(t, "EXPOSED", "EXPOSED") for t in range(13, 17)])
+    self_rows = [(t, 20 * (t - 10), 150, 0) for t in range(10, 17)]
+    enemy_rows = [(t, 100 - 20 * (t - 10), 150, 180) for t in range(10, 17)]
+    idx = _dual_records(self_rows, enemy_rows)
+    ev = motion_evidence(window, relations, idx, cfg)
+    assert ev.causal is True
+    mr = classify_motion_relation(ev, cfg)
+    assert mr.relation == "BOTH_MOVING"
+    assert classify_initiation_v2(ev, relations, cfg) == "MUTUAL"
+
+
+def test_possible_visibility_not_a_causal_anchor():
+    """PART AL #3 / PART C: possible_visibility_tick (FOV) must NOT anchor
+    causality — causal stays False, window anchors on shot not possible."""
+    from playerlab.contact_semantics import motion_evidence
+    cfg = Config(initiation_motion_window_ticks=8)
+    window = ContactWindow(10, None, None, 12, 16, 1, 2,
+                           possible_visibility_tick=11)  # FOV-only possible
+    relations = [_relation(t, "UNKNOWN", "UNKNOWN", None, None)
+                 for t in range(10, 17)]
+    self_rows = [(t, 30 * (t - 10), 200, 0) for t in range(10, 17)]
+    enemy_rows = [(t, 100, 0, 180) for t in range(10, 17)]
+    idx = _dual_records(self_rows, enemy_rows)
+    ev = motion_evidence(window, relations, idx, cfg)
+    assert ev.causal is False
+    assert ev.window_anchor != "visibility"   # possible tick not used as anchor
+    assert classify_initiation_v2(ev, relations, cfg) == "UNKNOWN"
+
+
+def test_real_visibility_motion_window_is_visibility_centered():
+    """PART AL #4 / PART D: with real visibility, window = [visibility-W,
+    visibility], not [pre_contact_start, ...]."""
+    from playerlab.contact_semantics import motion_evidence
+    cfg = Config(initiation_motion_window_ticks=8)
+    window = _causal_window(vis_tick=13, pre=0, res=16)  # pre far back
+    relations = [_relation(t, "UNKNOWN", "UNKNOWN", None, None)
+                 for t in range(0, 17)]
+    self_rows = [(t, 0, 0, 0) for t in range(0, 17)]
+    enemy_rows = [(t, 100, 0, 180) for t in range(0, 17)]
+    idx = _dual_records(self_rows, enemy_rows)
+    ev = motion_evidence(window, relations, idx, cfg)
+    # window should be [13-8, 13] = [5, 13]
+    assert ev.window_start == 5
+    assert ev.transition_tick == 13
+    assert ev.causal is True
+
+
+def test_no_visibility_motion_profile_does_not_produce_peek():
+    """PART AL #5: descriptive pre-contact motion without visibility cannot
+    produce PEEK (no causal initiation)."""
+    cfg = Config(initiation_motion_window_ticks=8,
+                 initiation_min_speed=80.0, initiation_min_displacement=24.0)
+    window = ContactWindow(10, None, 12, None, 16, 1, 2)  # shot anchor, no vis
+    relations = [_relation(t, "UNKNOWN", "UNKNOWN", None, None)
+                 for t in range(10, 17)]
+    self_rows = [(t, 30 * (t - 10), 200, 0) for t in range(10, 17)]
+    enemy_rows = [(t, 100, 0, 180) for t in range(10, 17)]
+    idx = _dual_records(self_rows, enemy_rows)
+    p = classify_contact(window, relations, idx, cfg)
+    assert p.top_label != "PEEK"
+    assert p.initiation in ("UNKNOWN", "STATIC_CONTACT")
+
+
+def test_motion_consistency_renamed_not_outward():
+    """PART E §11: the old 'outward_motion' is motion_consistency now; the
+    dataclass exposes self_motion_consistency / enemy_motion_consistency."""
+    from playerlab.contact_semantics import motion_evidence
+    cfg = Config(initiation_motion_window_ticks=4)
+    window = _causal_window(vis_tick=12, pre=10, res=16)
+    relations = [_relation(t, "UNKNOWN", "UNKNOWN") for t in range(10, 17)]
+    self_rows = [(t, 5 * (t - 10), 0, 0) for t in range(10, 17)]
+    enemy_rows = [(t, 100, 0, 180) for t in range(10, 17)]
+    idx = _dual_records(self_rows, enemy_rows)
+    ev = motion_evidence(window, relations, idx, cfg)
+    assert hasattr(ev, "self_motion_consistency")
+    assert hasattr(ev, "enemy_motion_consistency")
+    assert not hasattr(ev, "self_outward_motion")

@@ -300,6 +300,44 @@ CREATE TABLE IF NOT EXISTS contact_action_annotations (
 CREATE INDEX IF NOT EXISTS idx_contact_action_queue ON contact_action_samples (review_status, match_id, round, tick);
 """
 
+# V1.3.4.2: demo-centric review sessions + annotation schema cleanup
+# (PART G-H/I-N). One demo = one review session; annotations are one row per
+# dimension with an explicit review outcome; blind-review labels are kept
+# separate from revisions so history is never overwritten.
+V1342_SCHEMA = """
+CREATE TABLE IF NOT EXISTS demo_review_sessions (
+    session_id TEXT PRIMARY KEY,
+    demo_id TEXT, player_id INTEGER,
+    sample_ids TEXT,             -- frozen list at creation (PART AJ)
+    recommended_sample_ids TEXT,
+    current_index INTEGER DEFAULT 0,
+    completed_count INTEGER DEFAULT 0,
+    skipped_count INTEGER DEFAULT 0,
+    unsure_count INTEGER DEFAULT 0,
+    insufficient_count INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'NOT_STARTED',   -- NOT_STARTED | IN_PROGRESS | COMPLETED
+    focus_display_name TEXT,
+    started_at TEXT, updated_at TEXT, completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_drs_demo ON demo_review_sessions (demo_id, player_id);
+"""
+
+_ADD_COLUMNS_V12 = [
+    # contact_action_annotations: one row per dimension (PART G §16)
+    ("contact_action_annotations", "dimension", "TEXT"),      # INITIATION/ACTION/SUPPORT
+    ("contact_action_annotations", "review_outcome", "TEXT"), # LABELED/UNSURE/INSUFFICIENT_INFORMATION/SKIPPED
+    ("contact_action_annotations", "blind_review", "INTEGER DEFAULT 1"),
+    ("contact_action_annotations", "revision_of", "TEXT"),    # annotation_id (PART AD)
+    ("contact_action_annotations", "revision_reason", "TEXT"),
+    # contact_action_samples: model-version traceability (PART AK)
+    ("contact_action_samples", "detector_version", "TEXT"),
+    ("contact_action_samples", "git_commit", "TEXT"),
+    ("contact_action_samples", "geometry_version", "TEXT"),
+    ("contact_action_samples", "config_hash", "TEXT"),
+    ("contact_action_samples", "prediction_at_session", "TEXT"),  # snapshot at session creation
+    ("contact_action_samples", "review_outcome", "TEXT"),         # latest outcome
+]
+
 _ADD_COLUMNS_V8 = [
     ("calibration_samples", "label_source", "TEXT"),       # HUMAN/SIMULATED/...
     ("calibration_samples", "pipeline_validation", "TEXT"),  # NOT_TESTED/PIPELINE_VALIDATED/PIPELINE_FAILED
@@ -445,6 +483,14 @@ class DB:
         if current < 11:
             self.conn.executescript(V134_SCHEMA)
             self.conn.execute("UPDATE schema_version SET version=11")
+        # V1.3.4.2 (v12): demo review sessions + per-dimension annotations
+        if current < 12:
+            self.conn.executescript(V1342_SCHEMA)
+            for table, col, typ in _ADD_COLUMNS_V12:
+                cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")]
+                if col not in cols:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            self.conn.execute("UPDATE schema_version SET version=12")
 
     def schema_version(self) -> int:
         return self.conn.execute("SELECT version FROM schema_version").fetchone()["version"]
@@ -492,6 +538,109 @@ class DB:
                         d[k] = {}
             out.append(d)
         return out
+
+    # ---- V1.3.4.2 demo review sessions (PART I-N) ----
+    def upsert_review_session(self, s: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO demo_review_sessions
+               (session_id, demo_id, player_id, sample_ids, recommended_sample_ids,
+                current_index, completed_count, skipped_count, unsure_count,
+                insufficient_count, status, focus_display_name,
+                started_at, updated_at, completed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (s["session_id"], s.get("demo_id"), s.get("player_id"),
+             jd(s.get("sample_ids", [])), jd(s.get("recommended_sample_ids", [])),
+             s.get("current_index", 0), s.get("completed_count", 0),
+             s.get("skipped_count", 0), s.get("unsure_count", 0),
+             s.get("insufficient_count", 0), s.get("status", "NOT_STARTED"),
+             s.get("focus_display_name", ""),
+             s.get("started_at", ""), s.get("updated_at", ""),
+             s.get("completed_at", "")))
+        self.conn.commit()
+
+    def get_review_session(self, session_id: str) -> dict | None:
+        r = self.conn.execute(
+            "SELECT * FROM demo_review_sessions WHERE session_id=?",
+            (session_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        for k in ("sample_ids", "recommended_sample_ids"):
+            try:
+                d[k] = json.loads(d[k])
+            except Exception:  # noqa: BLE001
+                d[k] = []
+        return d
+
+    def get_review_sessions(self, demo_id=None, player_id=None):
+        q = "SELECT * FROM demo_review_sessions"
+        conds, args = [], []
+        if demo_id:
+            conds.append("demo_id=?"); args.append(demo_id)
+        if player_id:
+            conds.append("player_id=?"); args.append(player_id)
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY updated_at DESC"
+        rows = []
+        for r in self.conn.execute(q, args):
+            d = dict(r)
+            for k in ("sample_ids", "recommended_sample_ids"):
+                try:
+                    d[k] = json.loads(d[k])
+                except Exception:  # noqa: BLE001
+                    d[k] = []
+            rows.append(d)
+        return rows
+
+    def delete_review_session(self, session_id: str):
+        self.conn.execute("DELETE FROM demo_review_sessions WHERE session_id=?",
+                          (session_id,))
+        self.conn.commit()
+
+    # ---- V1.3.4.2 per-dimension contact annotations (PART G/H) ----
+    def upsert_contact_annotation_v2(self, a: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO contact_action_annotations
+               (annotation_id, sample_id, annotator_id, label, confidence,
+                reason, created_at, dimension, review_outcome, blind_review,
+                revision_of, revision_reason)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (a["annotation_id"], a.get("sample_id"), a.get("annotator_id", "local"),
+             a.get("label", ""), a.get("confidence"), a.get("reason", ""),
+             a.get("created_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
+             a.get("dimension", "INITIATION"),
+             a.get("review_outcome", "LABELED"),
+             1 if a.get("blind_review", True) else 0,
+             a.get("revision_of"), a.get("revision_reason", "")))
+        self.conn.commit()
+
+    def get_annotations_v2(self, sample_id=None, limit=1000):
+        q = "SELECT * FROM contact_action_annotations"
+        args = ()
+        if sample_id:
+            q += " WHERE sample_id=?"
+            args = (sample_id,)
+        rows = [dict(r) for r in self.conn.execute(
+            q + f" ORDER BY created_at LIMIT {limit}", args)]
+        return rows
+
+    def update_sample_review(self, sample_id: str, status: str,
+                             outcome: str | None = None,
+                             label_source: str | None = None):
+        if outcome and label_source:
+            self.conn.execute(
+                "UPDATE contact_action_samples SET review_status=?, review_outcome=?, "
+                "label_source=? WHERE id=?", (status, outcome, label_source, sample_id))
+        elif outcome:
+            self.conn.execute(
+                "UPDATE contact_action_samples SET review_status=?, review_outcome=? "
+                "WHERE id=?", (status, outcome, sample_id))
+        else:
+            self.conn.execute(
+                "UPDATE contact_action_samples SET review_status=? WHERE id=?",
+                (status, sample_id))
+        self.conn.commit()
 
     def close(self):
         self.conn.close()

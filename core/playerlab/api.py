@@ -364,29 +364,115 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     review = db.get_review_queue(limit=30)
                     _attach_match_info(db, review)
                     _json(self, {"review": review})
-                elif path == "/api/contact-review":
-                    # V1.3.4.1 Contact Review queue (PART L §37): each pending
-                    # contact sample gets the three human questions
+                elif path == "/api/contact-review/demos":
+                    # PART J: Choose Demo to Review — one card per demo+player
+                    from .review_session import build_demo_candidates
+                    from .focus import players_of_match, default_focus
+                    # group pending samples by (demo, player)
                     samples = db.get_contact_action_samples(review_status="pending",
-                                                            limit=200)
+                                                            limit=100000)
+                    groups = {}
                     for s in samples:
-                        s["player_info"] = _player_info(db, s.get("match_id"),
-                                                         s.get("player_id"))
-                        mi = _match_info(db, s.get("match_id"))
-                        if mi:
-                            s["match_info"] = mi
-                        # in-round clock for display
-                        st = _round_start_tick(db, s.get("match_id"), s.get("round"))
-                        if st is not None and s.get("tick") is not None:
-                            tr = (mi or {}).get("tickrate") or 64
-                            s["in_round_seconds"] = round(
-                                (int(s["tick"]) - int(st)) / tr, 2)
-                    _json(self, {"samples": samples})
+                        k = (s.get("match_id"), s.get("player_id"))
+                        groups.setdefault(k, []).append(s)
+                    # merge with existing sessions for progress
+                    sessions = db.get_review_sessions()
+                    sess_by_demo_player = {}
+                    for se in sessions:
+                        if se.get("status") != "COMPLETED":
+                            sess_by_demo_player[(se.get("demo_id"),
+                                                 se.get("player_id"))] = se
+                    out = []
+                    for (demo_id, pid), _samples in groups.items():
+                        mi = _match_info(db, demo_id)
+                        pi = _player_info(db, demo_id, pid)
+                        if not mi:
+                            continue
+                        rec = build_demo_candidates(db, demo_id, pid)
+                        session = sess_by_demo_player.get((demo_id, pid))
+                        if session is None and rec["recommended_count"]:
+                            session = sess_by_demo_player.get((demo_id, pid))
+                        reviewed = 0
+                        status = "NOT_STARTED"
+                        if session:
+                            reviewed = sum(
+                                1 for sid in (session.get("sample_ids") or [])
+                                if db.conn.execute(
+                                    "SELECT review_status FROM contact_action_samples "
+                                    "WHERE id=?", (sid,)).fetchone()
+                                and db.conn.execute(
+                                    "SELECT review_status FROM contact_action_samples "
+                                    "WHERE id=?", (sid,)).fetchone()["review_status"]
+                                == "reviewed")
+                            status = session.get("status", "NOT_STARTED")
+                        out.append({
+                            "demo_id": demo_id,
+                            "map": (mi or {}).get("map_name"),
+                            "match_time": (mi or {}).get("match_time"),
+                            "demo_file": (mi or {}).get("demo_file"),
+                            "focus_player": {
+                                "steam_id": (pi or {}).get("steam_id"),
+                                "display_name": (pi or {}).get("display_name"),
+                                "team": (pi or {}).get("team"),
+                            } if pi else None,
+                            "candidate_count": rec["all_count"],
+                            "recommended_count": rec["recommended_count"],
+                            "reviewed_count": reviewed,
+                            "status": status,
+                            "session_id": session.get("session_id") if session else None,
+                        })
+                    out.sort(key=lambda d: (d.get("match_time") or ""), reverse=True)
+                    _json(self, {"demos": out})
+                elif path == "/api/contact-review/session/start":
+                    pass  # handled in POST (same path is GET-disallowed)
+                elif path.startswith("/api/contact-review/session/"):
+                    rest = path[len("/api/contact-review/session/"):]
+                    parts = rest.split("/")
+                    session_id = parts[0]
+                    from .review_session import (current_sample,
+                                                 session_summary,
+                                                 conflict_samples)
+                    sess = db.get_review_session(session_id)
+                    if not sess:
+                        return _json(self, {"error": "session not found"}, 404)
+                    sub = parts[1] if len(parts) > 1 else ""
+                    if sub == "summary":
+                        _json(self, {"summary": session_summary(db, sess)})
+                    elif sub == "conflicts":
+                        cs = conflict_samples(db, sess)
+                        for s in cs:
+                            s["player_info"] = _player_info(db, s.get("match_id"),
+                                                            s.get("player_id"))
+                            mi = _match_info(db, s.get("match_id"))
+                            if mi:
+                                s["match_info"] = mi
+                        _json(self, {"conflicts": cs})
+                    elif sub == "current":
+                        s = current_sample(db, sess)
+                        if s:
+                            s["player_info"] = _player_info(db, s.get("match_id"),
+                                                            s.get("player_id"))
+                            mi = _match_info(db, s.get("match_id"))
+                            if mi:
+                                s["match_info"] = mi
+                            st = _round_start_tick(db, s.get("match_id"), s.get("round"))
+                            if st is not None and s.get("tick") is not None:
+                                tr = (mi or {}).get("tickrate") or 64
+                                s["in_round_seconds"] = round(
+                                    (int(s["tick"]) - int(st)) / tr, 2)
+                        _json(self, {"sample": s,
+                                     "index": sess.get("current_index", 0),
+                                     "total": len(sess.get("sample_ids") or []),
+                                     "status": sess.get("status"),
+                                     "sample_ids": sess.get("sample_ids")})
+                    else:
+                        _json(self, {"session": sess})
                 elif path == "/api/contact-review-stats":
-                    rows = db.conn.execute(
-                        "SELECT label_source, review_status, COUNT(*) n FROM "
-                        "contact_action_samples GROUP BY label_source, review_status").fetchall()
-                    _json(self, {"stats": [dict(r) for r in rows]})
+                    # PART X §46: sanity across ALL / PENDING / REVIEWED_HUMAN
+                    rows_all = db.conn.execute(
+                        "SELECT label_source, review_status, review_outcome, COUNT(*) n "
+                        "FROM contact_action_samples GROUP BY label_source, review_status, review_outcome").fetchall()
+                    _json(self, {"stats": [dict(r) for r in rows_all]})
                 elif path == "/api/annotations/stats":
                     from .annotation import annotation_stats
                     _json(self, annotation_stats(db))
@@ -523,13 +609,63 @@ def make_handler(db_path: str, cfg: Config, ui_dir: str):
                     else:
                         ctx = set_focus(db, match_id, steam_id, persist=persist)
                         _json(self, {"focus": ctx.to_dict()})
+                elif path == "/api/contact-review/session/start":
+                    from .review_session import start_session
+                    from .focus import players_of_match
+                    demo_id = body.get("demo_id", "")
+                    player_id = int(body.get("player_id") or 0)
+                    recommended_only = bool(body.get("recommended_only", True))
+                    players = players_of_match(db, demo_id)
+                    p = next((x for x in players if int(x["steam_id"]) == player_id), None)
+                    sess = start_session(db, demo_id, player_id,
+                                         player_display_name=(p or {}).get("display_name", ""),
+                                         recommended_only=recommended_only)
+                    _json(self, {"session": sess})
+                elif path.startswith("/api/contact-review/session/") and \
+                        path.endswith("/answer"):
+                    rest = path[len("/api/contact-review/session/"):-len("/answer")]
+                    session_id = rest
+                    from .review_session import record_answer
+                    res = record_answer(
+                        db, session_id, body.get("sample_id", ""),
+                        {
+                            "INITIATION": body.get("human_initiation", ""),
+                            "ACTION": body.get("human_action", ""),
+                            "SUPPORT": body.get("human_support", ""),
+                        },
+                        outcome=body.get("outcome", "LABELED"),
+                        reason=body.get("reason", ""),
+                        blind=bool(body.get("blind", True)),
+                        confidence=float(body.get("human_confidence", 0.7)))
+                    _json(self, {"saved": True, **res})
+                elif path.startswith("/api/contact-review/session/") and \
+                        path.endswith("/skip"):
+                    rest = path[len("/api/contact-review/session/"):-len("/skip")]
+                    session_id = rest
+                    from .review_session import record_skip
+                    res = record_skip(db, session_id, body.get("sample_id", ""))
+                    _json(self, {"saved": True, **res})
+                elif path.startswith("/api/contact-review/session/") and \
+                        path.endswith("/revision"):
+                    rest = path[len("/api/contact-review/session/"):-len("/revision")]
+                    session_id = rest
+                    from .review_session import record_revision
+                    res = record_revision(
+                        db, session_id, body.get("sample_id", ""),
+                        body.get("original_annotation_id", ""),
+                        {"INITIATION": body.get("human_initiation", ""),
+                         "ACTION": body.get("human_action", ""),
+                         "SUPPORT": body.get("human_support", "")},
+                        reason=body.get("reason", ""))
+                    _json(self, {"saved": True, **res})
                 elif path == "/api/contact-review-review":
-                    # V1.3.4.1 Contact Review submission: three human answers
-                    # (initiation / action / support) recorded on one sample.
+                    # legacy single-shot submission (kept for compatibility);
+                    # new UI uses session-based endpoints
                     sid = body.get("sample_id", "")
                     db.conn.execute(
                         "UPDATE contact_action_samples SET review_status='reviewed', "
-                        "label_source='HUMAN', human_label=? WHERE id=?",
+                        "label_source='HUMAN', human_label=?, review_outcome='LABELED' "
+                        "WHERE id=?",
                         (json.dumps({"initiation": body.get("human_initiation", ""),
                                      "action": body.get("human_action", ""),
                                      "support": body.get("human_support", ""),

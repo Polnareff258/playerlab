@@ -28,16 +28,35 @@ _EPISODE_TAIL = 32
 
 
 def contact_meta(prediction) -> dict:
-    """Serialize V1.3.4 contact output without discarding its distribution."""
+    """Serialize V1.3.4 contact output without discarding its distribution.
+
+    V1.3.4.2 PART F: `confidence` here is a rule score, NOT calibrated
+    probability. calibrated_confidence stays None until enough HUMAN labels
+    exist. UI shows 'Evidence: Strong/Medium/Weak' instead of pseudo-
+    confidence wording.
+    """
     return {"initiation": prediction.initiation,
             "prediction": {"top_label": prediction.top_label,
                            "probabilities": prediction.probabilities,
                            "confidence": prediction.confidence,
+                           "evidence_strength": _evidence_strength(prediction.confidence),
+                           "calibrated_confidence": None,  # until human labels
                            "ambiguous": prediction.ambiguous,
                            "ambiguous_labels": list(prediction.ambiguous_labels),
                            "subtype": prediction.subtype,
                            "why": getattr(prediction, "why", ""),
                            "evidence": prediction.evidence}}
+
+
+def _evidence_strength(rule_score: float) -> str:
+    """Map a rule score to an evidence-strength label (not calibration)."""
+    if rule_score is None:
+        return "WEAK"
+    if rule_score >= 0.66:
+        return "STRONG"
+    if rule_score >= 0.4:
+        return "MEDIUM"
+    return "WEAK"
 
 
 def apply_contact_prediction(dp: dict, prediction) -> dict:

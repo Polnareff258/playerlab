@@ -89,7 +89,12 @@ class ContactWindow:
 
 @dataclass(frozen=True)
 class InitiationMotionEvidence:
-    """Motion measurements inside the pre-contact window (PART A §2)."""
+    """Motion measurements inside the pre-contact window (PART A §2).
+
+    V1.3.4.2: this is MOTION MEASUREMENT, not causality. causal=False when no
+    real visibility evidence exists — the measurements are descriptive only
+    and must never be read as 'who caused contact'.
+    """
     window_start: int
     transition_tick: int | None
     self_displacement: float = 0.0
@@ -98,13 +103,40 @@ class InitiationMotionEvidence:
     enemy_mean_speed: float = 0.0
     self_peak_speed: float = 0.0
     enemy_peak_speed: float = 0.0
-    self_outward_motion: float = 0.0          # toward exposure boundary
-    enemy_outward_motion: float = 0.0
+    self_motion_consistency: float = 0.0      # direction consistency (not
+    enemy_motion_consistency: float = 0.0     #  exposure-boundary motion)
     self_stability: float = 0.0               # 0..1 (position+yaw stability)
     enemy_stability: float = 0.0
     self_yaw_change: float = 0.0              # circular |deg|
     enemy_yaw_change: float = 0.0
     confidence: float = 0.0
+    causal: bool = False                      # True only w/ real visibility
+    window_anchor: str = "shot"               # visibility | shot | damage
+
+    def summary(self) -> dict:
+        return {k: (v if not isinstance(v, float) else round(v, 3))
+                for k, v in self.__dict__.items()}
+
+
+# V1.3.4.2 PART A: MotionRelation — a measurement/behavior category, strictly
+# separate from ContactInitiation. 'Both moving' proves only 'both moving',
+# never 'both jointly caused contact'.
+MOTION_RELATIONS = ("SELF_MOVING", "ENEMY_MOVING", "BOTH_MOVING",
+                    "BOTH_STABLE", "MIXED", "UNKNOWN")
+
+
+@dataclass(frozen=True)
+class MotionRelationEvidence:
+    """Observed motion relation (PART A §1-§2). Measurement, not causality."""
+    relation: str = "UNKNOWN"
+    self_displacement: float = 0.0
+    enemy_displacement: float = 0.0
+    self_mean_speed: float = 0.0
+    enemy_mean_speed: float = 0.0
+    self_stability: float = 0.0
+    enemy_stability: float = 0.0
+    evidence_strength: float = 0.0            # 0..1 how clearly observable
+    causal_anchor: bool = False               # does real visibility exist?
 
     def summary(self) -> dict:
         return {k: (v if not isinstance(v, float) else round(v, 3))
@@ -272,38 +304,39 @@ def fill_visibility_ticks(window: ContactWindow, relations: list[ExposureRelatio
 
 
 # ---------------------------------------------------------------------------
-# PART A: InitiationMotionEvidence + motion-based ContactInitiation v2
+# PART A: InitiationMotionEvidence + MotionRelation + ContactInitiation v2
 # ---------------------------------------------------------------------------
 
 def motion_evidence(window: ContactWindow, relations: list[ExposureRelation],
                     idx: dict, cfg) -> InitiationMotionEvidence:
-    """Measure both players inside the pre-contact motion window.
+    """Measure both players inside the motion window (PART C/D).
 
-    The decisive motion happens BEFORE the contact moment, not during it:
-    windowing around the shot/damage anchor captures both players mid-fight
-    and misreads every exchange as MUTUAL. We therefore measure the span
-    ending cfg.initiation_motion_window_ticks *before* the anchor (or before
-    the real visibility tick when available), i.e. the movement that CAUSED
-    the LOS transition. Bounded per-player scans only (PART T §50).
+    Anchor rules (V1.3.4.2):
+      * REAL visibility_tick exists -> window = [visibility-W, visibility],
+        measuring motion immediately adjacent to the LOS transition,
+        causal=True (strong evidence).
+      * No real visibility -> window = [shot_or_damage-W, shot_or_damage],
+        producing a DESCRIPTIVE pre-contact motion profile with causal=False.
+        possible_visibility_tick is informational only and never anchors
+        causality.
     """
-    anchor = window.visibility_tick or window.possible_visibility_tick \
-        or window.first_shot_tick or window.first_damage_tick \
-        or window.resolution_tick or window.pre_contact_start
-    # measure the window ending BEFORE the anchor (the causing motion)
-    win_end = max(window.pre_contact_start,
-                  anchor - cfg.initiation_motion_window_ticks)
-    win_start = window.pre_contact_start
-    if win_end <= win_start:
-        # window too small: fall back to measuring right up to the anchor
-        win_end = anchor
-        win_start = max(window.pre_contact_start,
-                        anchor - cfg.initiation_motion_window_ticks)
+    has_visibility = window.visibility_tick is not None
+    anchor = window.visibility_tick
+    anchor_kind = "visibility"
+    if not has_visibility:
+        # possible_visibility_tick is NOT a causal anchor (PART C §7)
+        anchor = (window.first_shot_tick or window.first_damage_tick
+                  or window.resolution_tick or window.pre_contact_start)
+        anchor_kind = "shot" if window.first_shot_tick else "damage"
+    win_end = anchor
+    win_start = max(window.pre_contact_start,
+                    anchor - cfg.initiation_motion_window_ticks)
 
     def measure(steamid: int):
         rows = [idx[(steamid, t)] for t in range(win_start, win_end + 1)
                 if (steamid, t) in idx]
         if not rows:
-            return dict(disp=0.0, mean=0.0, peak=0.0, out=0.0,
+            return dict(disp=0.0, mean=0.0, peak=0.0, cons=0.0,
                         stable=1.0, yaw=0.0)
         valid = [(r.get("x"), r.get("y")) for r in rows
                  if r.get("x") is not None and r.get("y") is not None]
@@ -317,23 +350,26 @@ def motion_evidence(window: ContactWindow, relations: list[ExposureRelation],
         peak = max(speeds) if speeds else 0.0
         yaws = [float(r["yaw"]) for r in rows if r.get("yaw") is not None]
         yaw_ch = circular_diff(yaws[0], yaws[-1]) if len(yaws) > 1 else 0.0
-        # outward motion: last velocity along the window displacement vector
-        out = 0.0
-        if len(valid) > 1:
+        # motion consistency (V1.3.4.2 PART E): the old 'outward_motion' was
+        # direction-consistency, not motion toward an exposure boundary. It is
+        # renamed so it cannot mislead; true exposure-driving motion needs
+        # geometry LOS(current) vs LOS(projected) — optional enhancement.
+        cons = 0.0
+        if len(valid) > 1 and len(speeds) >= 2:
             dx, dy = valid[-1][0] - valid[0][0], valid[-1][1] - valid[0][1]
             n = math.hypot(dx, dy)
             if n > 1.0:
                 vx = float(rows[-1].get("vx") or 0.0)
                 vy = float(rows[-1].get("vy") or 0.0)
                 if vx or vy:
-                    out = (vx * dx + vy * dy) / n
+                    cons = (vx * dx + vy * dy) / n
         # stability: position low motion + yaw low circular spread
         yaw_var = yaw_variance_circular(yaws) if yaws else 0.0
         pos_ok = disp <= cfg.hold_max_displacement
         yaw_ok = yaw_var <= cfg.hold_max_yaw_variance
         stable = (1.0 if (pos_ok and yaw_ok) else
                   0.5 if (pos_ok or yaw_ok) else 0.0)
-        return dict(disp=disp, mean=mean, peak=peak, out=out,
+        return dict(disp=disp, mean=mean, peak=peak, cons=cons,
                     stable=stable, yaw=yaw_ch)
 
     self_m = measure(window.self_id)
@@ -346,21 +382,61 @@ def motion_evidence(window: ContactWindow, relations: list[ExposureRelation],
                                     self_m["disp"], enemy_m["disp"],
                                     self_m["mean"], enemy_m["mean"],
                                     self_m["peak"], enemy_m["peak"],
-                                    self_m["out"], enemy_m["out"],
+                                    self_m["cons"], enemy_m["cons"],
                                     self_m["stable"], enemy_m["stable"],
-                                    self_m["yaw"], enemy_m["yaw"], conf)
+                                    self_m["yaw"], enemy_m["yaw"], conf,
+                                    causal=has_visibility,
+                                    window_anchor=anchor_kind)
+
+
+def classify_motion_relation(ev: InitiationMotionEvidence, cfg) -> MotionRelationEvidence:
+    """Observed motion relation — a measurement category (PART A §1).
+
+    BOTH_MOVING here means only that both players were moving; it must not be
+    read as MUTUAL contact initiation (that requires real exposure evidence).
+    """
+    def moving(m):
+        return (m["mean"] >= cfg.initiation_min_speed or
+                m["disp"] >= cfg.initiation_min_displacement)
+    self_mv = moving({"mean": ev.self_mean_speed, "disp": ev.self_displacement})
+    enemy_mv = moving({"mean": ev.enemy_mean_speed, "disp": ev.enemy_displacement})
+    rel = "UNKNOWN"
+    if self_mv and enemy_mv:
+        rel = "BOTH_MOVING"
+    elif self_mv:
+        rel = "SELF_MOVING"
+    elif enemy_mv:
+        rel = "ENEMY_MOVING"
+    elif (ev.self_mean_speed <= cfg.static_motion_max and
+          ev.enemy_mean_speed <= cfg.static_motion_max):
+        rel = "BOTH_STABLE"
+    else:
+        rel = "MIXED"
+    strength = min(1.0, 0.4 + abs(ev.self_mean_speed - ev.enemy_mean_speed) /
+                   max(1.0, ev.self_mean_speed + ev.enemy_mean_speed + 1.0))
+    return MotionRelationEvidence(rel, ev.self_displacement, ev.enemy_displacement,
+                                  ev.self_mean_speed, ev.enemy_mean_speed,
+                                  ev.self_stability, ev.enemy_stability,
+                                  round(strength, 3), causal_anchor=ev.causal)
 
 
 def classify_initiation_v2(ev: InitiationMotionEvidence, relations: list[ExposureRelation],
                            cfg) -> str:
-    """ContactInitiation v2 — motion-based, never transition-tick equality.
+    """ContactInitiation v2 — motion-based, but with an honesty gate.
 
-    Order: both stable -> STATIC_CONTACT; one side drives exposure (sustained
-    motion, judged by mean speed / displacement — a brief speed peak is not
-    enough to count as driving) -> SELF/ENEMY_INITIATED; both move
-    meaningfully -> MUTUAL; else UNKNOWN.
+    V1.3.4.2 PART B: without real visibility (causal=False) the motion window
+    is descriptive only and CANNOT support a strong causal claim. Initiation
+    then defaults to UNKNOWN (or STATIC_CONTACT for the fully-static case);
+    BOTH_MOVING never auto-maps to MUTUAL without real LOS evidence.
     """
-    # sustained motion: mean speed or net displacement across the window
+    # hard honesty gate: no real visibility -> no strong causal claim
+    if not ev.causal:
+        both_static = (ev.self_mean_speed <= cfg.static_motion_max and
+                       ev.enemy_mean_speed <= cfg.static_motion_max)
+        return "STATIC_CONTACT" if both_static else "UNKNOWN"
+
+    # real visibility exists: motion adjacent to the LOS transition may
+    # support a causal claim
     def meaningful(mean_speed: float, disp: float) -> bool:
         return (mean_speed >= cfg.initiation_min_speed or
                 disp >= cfg.initiation_min_displacement)
@@ -368,29 +444,20 @@ def classify_initiation_v2(ev: InitiationMotionEvidence, relations: list[Exposur
     self_meaningful = meaningful(ev.self_mean_speed, ev.self_displacement)
     enemy_meaningful = meaningful(ev.enemy_mean_speed, ev.enemy_displacement)
 
-    # both (mostly) static -> STATIC_CONTACT (smoke fade / geometry change)
     if (ev.self_mean_speed <= cfg.static_motion_max and
             ev.enemy_mean_speed <= cfg.static_motion_max):
         return "STATIC_CONTACT"
-
-    # both move meaningfully and neither dominates -> MUTUAL
     if self_meaningful and enemy_meaningful:
         max_mean = max(ev.self_mean_speed, ev.enemy_mean_speed, 1.0)
         ratio = min(ev.self_mean_speed, ev.enemy_mean_speed) / max_mean
         if ratio >= cfg.mutual_motion_ratio:
             return "MUTUAL"
-        # one side clearly dominates sustained motion
         return ("SELF_INITIATED" if ev.self_mean_speed >= ev.enemy_mean_speed
                 else "ENEMY_INITIATED")
-
-    # only one side has sustained motion -> that side initiated
     if self_meaningful:
         return "SELF_INITIATED"
     if enemy_meaningful:
         return "ENEMY_INITIATED"
-
-    # neither has sustained motion but the window shows movement (peaks):
-    # weak evidence -> UNKNOWN rather than guessing
     return "UNKNOWN"
 
 
@@ -622,7 +689,7 @@ def _peek_evidence_v2(window: ContactWindow, relations: list[ExposureRelation],
     if ok:
         confidence = min(1.0, 0.55 + 0.25 * gain + (0.2 if motion_overlap else 0.0))
     return PeekEvidence(pre, post, displacement, displacement,
-                        motion.self_outward_motion, gain, delay,
+                        motion.self_motion_consistency, gain, delay,
                         initiation, confidence,
                         motion_overlaps_transition=bool(motion_overlap),
                         enemy_stable=enemy_stable)
