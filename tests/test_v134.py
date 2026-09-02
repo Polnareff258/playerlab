@@ -96,3 +96,12 @@ def test_unavailable_csnet_is_auxiliary_and_returns_none():
     from playerlab.csnet_assist import CSNetAssistProvider
     provider = CSNetAssistProvider(Config(csnet_repo_dir="missing"))
     assert provider.collect("demo", ContactWindow(1, 2, None, None, 3, 1, 2), [2]) is None
+
+
+def test_decision_contact_meta_preserves_probability_and_initiator():
+    from playerlab.decision import contact_meta
+    p = ActionPrediction("HOLD", {"HOLD": .8, "PEEK": .1, "UNKNOWN": .1},
+                         .8, False, "ENEMY_INITIATED", {}, "STATIC_HOLD")
+    meta = contact_meta(p)
+    assert meta["initiation"] == "ENEMY_INITIATED"
+    assert meta["prediction"]["probabilities"]["HOLD"] == .8

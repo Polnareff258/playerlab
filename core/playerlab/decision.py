@@ -8,6 +8,7 @@ Action predicates are parameterized via Config; no geometric occlusion in V1
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 
 from .config import Config
 from .features import build_features
@@ -20,6 +21,17 @@ from .weapons import name_from_def
 TAXONOMY = ["PEEK", "HOLD", "RE_PEEK", "DISENGAGE", "FALLBACK"]
 _LOOKBACK = 96  # ticks before first contact to look for approach
 _EPISODE_TAIL = 32
+
+
+def contact_meta(prediction) -> dict:
+    """Serialize V1.3.4 contact output without discarding its distribution."""
+    return {"initiation": prediction.initiation,
+            "prediction": {"top_label": prediction.top_label,
+                           "probabilities": prediction.probabilities,
+                           "confidence": prediction.confidence,
+                           "ambiguous": prediction.ambiguous,
+                           "subtype": prediction.subtype,
+                           "evidence": prediction.evidence}}
 
 
 def _dot_dir(px, py, vx, vy, ax, ay) -> float:
