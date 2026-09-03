@@ -40,7 +40,7 @@ if not exist "data\analyses" mkdir "data\analyses"
 REM ---- 3. core dependency: demoparser2 + pandas ----
 %PY% -c "import demoparser2, pandas" >nul 2>nul
 if errorlevel 1 (
-    echo [PlayerLab] missing core deps (demoparser2 / pandas) - installing...
+    echo [PlayerLab] missing core deps: demoparser2 / pandas - installing...
     %PY% -m pip install demoparser2==0.42.0 pandas
     if errorlevel 1 (
         echo [PlayerLab] ERROR: pip install failed. Check network / proxy.
@@ -60,7 +60,7 @@ if not exist "data\playerlab.sqlite" (
 REM ---- 5. optional geometry deps: awpy (for LOS/nav analysis) ----
 %PY% -c "import awpy" >nul 2>nul
 if errorlevel 1 (
-    echo [PlayerLab] awpy not found - installing (optional geometry backend)...
+    echo [PlayerLab] awpy not found - installing optional geometry backend...
     %PY% -m pip install awpy
 )
 
